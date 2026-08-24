@@ -1,10 +1,25 @@
+// =====================================================
+// STEPPER MOTOR CONTROL - PIC16F887
+// =====================================================
+
+
 // ===============================
 // VARIABLES
 // ===============================
 
+
 unsigned int adc_value;
 unsigned int delay_time;
-char delay_txt[8];
+unsigned int i;
+unsigned char mode 0;
+unsigned char last_mode 0xFF;
+
+// ===============================
+// FULL STEP SEQUENCE
+// ===============================
+
+unsigned abort full_step_CW[4] *(1, 2, 4, 8);
+
 
 // ===============================
 // LCD CONNECTIONS
@@ -26,130 +41,131 @@ sbit LCD_D7_Direction at TRISB3_bit;
 
 
 // ===============================
-// FULL STEP - CLOCKWISE
+// SPEED CONTROL
 // ===============================
 
-void FullStepCW()
+void UpdateSpeed()
 {
-    PORTD = 0b00000011;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
+    // Normal motor speed
+    delay_time = 200;
 
-    PORTD = 0b00000110;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
 
-    PORTD = 0b00001100;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
+    // SW8 - Potentiometer controls the base speed
+    if(PORTC.F7 == 1)
+    {
+        adc_value = ADC_Read(2);
 
-    PORTD = 0b00001001;
-    Vdelay_ms(delay_time);
+        // ADC 0     -> 500 ms -> slow
+        // ADC 1023  -> 50 ms  -> fast
+        delay_time =
+            500 - (((unsigned long)adc_value * 450) / 1023);
+    }
+
+
+    // SW6 - Speed up
+    // Reduce delay between steps
+    if(PORTC.F5 == 1)
+    {
+        if(delay_time > 100)
+            delay_time = delay_time - 50;
+    }
+
+
+    // SW7 - Speed down
+    // Increase delay between steps
+    if(PORTC.F6 == 1)
+    {
+        if(delay_time < 450)
+            delay_time = delay_time + 50;
+    }
 }
 
 
 // ===============================
-// FULL STEP - COUNTER CLOCKWISE
+// LCD DELAY DISPLAY
 // ===============================
 
-void FullStepCCW()
+void ShowDelay()
 {
-    PORTD = 0b00001001;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
+    WordToStr(delay_time, delay_txt);
 
-    PORTD = 0b00001100;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
+    // Clear line 2 before rewriting delay
+    Lcd_Out(2,1,"                ");
 
-    PORTD = 0b00000110;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
-
-    PORTD = 0b00000011;
-    Vdelay_ms(delay_time);
-}
-
-// ===============================
-// HALF STEP - CLOCKWISE
-// ===============================
-
-void HalfStepCW()
-{
-    PORTD = 0b00000001;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
-
-    PORTD = 0b00000011;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
-
-    PORTD = 0b00000010;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
-
-    PORTD = 0b00000110;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
-
-    PORTD = 0b00000100;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
-
-    PORTD = 0b00001100;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
-
-    PORTD = 0b00001000;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
-
-    PORTD = 0b00001001;
-    Vdelay_ms(delay_time);
+    Lcd_Out(2,1,"DELAY:");
+    Lcd_Out(2,7,delay_txt);
+    Lcd_Out(2,13,"ms");
 }
 
 
 // ===============================
-// HALF STEP - COUNTER CLOCKWISE
+// RUN STEPPER MOTOR
 // ===============================
 
-void HalfStepCCW()
+// halfStepMode:
+// 0 = Full Step
+// 1 = Half Step
+//
+// reverse:
+// 0 = Clockwise
+// 1 = Counter-Clockwise
+
+void RunMotor(unsigned char halfStepMode,
+              unsigned char reverse)
 {
-    PORTD = 0b00001001;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
+    unsigned char i;
+    unsigned char numberOfSteps;
 
-    PORTD = 0b00001000;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
 
-    PORTD = 0b00001100;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
+    // Select the number of patterns required
+    if(halfStepMode == 0)
+        numberOfSteps = 4;
+    else
+        numberOfSteps = 8;
 
-    PORTD = 0b00000100;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
 
-    PORTD = 0b00000110;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
+    for(i = 0; i < numberOfSteps; i++)
+    {
+        // SW5 - Halt immediately
+        if(PORTC.F4 == 1)
+        {
+            PORTD = 0x00;
+            return;
+        }
 
-    PORTD = 0b00000010;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
 
-    PORTD = 0b00000011;
-    Vdelay_ms(delay_time);
-    if(PORTC.F4 == 1) return;
+        // Update speed so the potentiometer
+        // can affect the motor while running
+        UpdateSpeed();
 
-    PORTD = 0b00000001;
-    Vdelay_ms(delay_time);
+
+        // FULL STEP
+        if(halfStepMode == 0)
+        {
+            if(reverse == 0)
+                PORTD = fullStep[i];
+            else
+                PORTD = fullStep[numberOfSteps - 1 - i];
+        }
+
+
+        // HALF STEP
+        else
+        {
+            if(reverse == 0)
+                PORTD = halfStep[i];
+            else
+                PORTD = halfStep[numberOfSteps - 1 - i];
+        }
+
+
+        Vdelay_ms(delay_time);
+    }
 }
 
 
 // ===============================
-// MAIN
+// MAIN PROGRAM
 // ===============================
 
 void main()
@@ -158,19 +174,23 @@ void main()
     // PORT CONFIGURATION
     // ---------------------------
 
-    ANSEL = 0x04;       // AN2 = analog
-    ANSELH = 0x00;      // Other analogue channels = digital
+    ANSEL  = 0x04;      // RA2 / AN2 = analogue input
+    ANSELH = 0x00;      // Remaining analogue channels digital
 
     C1ON_bit = 0;       // Disable comparator 1
     C2ON_bit = 0;       // Disable comparator 2
 
-    TRISA = 0xFF;       // PORTA inputs
+    TRISA = 0xFF;       // RA2 potentiometer input
     TRISB = 0x00;       // LCD outputs
-    TRISC = 0xFF;       // PORTC inputs - switches
-    TRISD = 0x00;       // PORTD outputs - stepper
+    TRISC = 0xFF;       // SW1-SW8 inputs
+    TRISD = 0x00;       // Stepper motor outputs
 
-    PORTC = 0x00;
     PORTD = 0x00;
+
+
+    // ---------------------------
+    // INITIALISE ADC AND LCD
+    // ---------------------------
 
     ADC_Init();
 
@@ -180,126 +200,100 @@ void main()
 
     delay_time = 200;
 
+
+    // ===========================
+    // MAIN CONTROL LOOP
+    // ===========================
+
     while(1)
     {
-        // ===========================
-        // READ ADC
-        // ===========================
-    
-        adc_value = ADC_Read(2);
-     
-        // ===========================
-        // SPEED CONTROL
-        // ===========================
-    
-        if(PORTC.F7 == 1)
-        {
-            // Analog speed control
-            delay_time = 500 - (((unsigned long)adc_value * 450) / 1023);
-    
-            if(delay_time < 50)
-                delay_time = 50;
-        }
-        else
-        {
-            // Manual speed control
-            if(PORTC.F5 == 1)
-            {
-                if(delay_time > 50)
-                    delay_time = delay_time - 25;
-            
-                while(PORTC.F5 == 1);
-                Delay_ms(20);
-            }
-            
-            if(PORTC.F6 == 1)
-            {
-                if(delay_time < 500)
-                    delay_time = delay_time + 25;
-            
-                while(PORTC.F6 == 1);
-                Delay_ms(20);
-            }
-        }
-    
-    
-        // ===========================
-        // MOTOR CONTROL
-        // ===========================
-    
+        // Read speed controls before
+        // determining motor operation
+        UpdateSpeed();
+
+
+        // ---------------------------
+        // SW5 - HALT
+        // ---------------------------
+
         if(PORTC.F4 == 1)
         {
-            // SW5 - Halt
             PORTD = 0x00;
-    
-            Lcd_Cmd(_LCD_CLEAR);
-            Lcd_Out(1,1,"MOTOR");
-            Lcd_Out(2,1,"HALT");
+
+            Lcd_Out(1,1,"MOTOR HALT      ");
+            Lcd_Out(2,1,"                ");
         }
-    
+
+
+        // ---------------------------
+        // SW1 - FULL STEP CW
+        // ---------------------------
+
         else if(PORTC.F0 == 1)
         {
-            // SW1 - Full step CW
-            Lcd_Cmd(_LCD_CLEAR);
-            Lcd_Out(1,1,"FULL STEP CW");
-            
-            WordToStr(delay_time, delay_txt);
-            Lcd_Out(2,1,"DELAY:");
-            Lcd_Out(2,7,delay_txt);
-            Lcd_Out(2,13,"ms");
-            
-            FullStepCW();
+            Lcd_Out(1,1,"FULL STEP CW    ");
+
+            ShowDelay();
+
+            RunMotor(0, 0);
         }
-    
+
+
+        // ---------------------------
+        // SW2 - HALF STEP CW
+        // ---------------------------
+
         else if(PORTC.F1 == 1)
         {
-            // SW2 - Half step CW
-            Lcd_Cmd(_LCD_CLEAR);
-            Lcd_Out(1,1,"HALF STEP CW");
-            
-            WordToStr(delay_time, delay_txt);
-            Lcd_Out(2,1,"DELAY:");
-            Lcd_Out(2,7,delay_txt);
-            Lcd_Out(2,13,"ms");
-            
-            HalfStepCW();
+            Lcd_Out(1,1,"HALF STEP CW    ");
+
+            ShowDelay();
+
+            RunMotor(1, 0);
         }
-    
+
+
+        // ---------------------------
+        // SW3 - FULL STEP CCW
+        // ---------------------------
+
         else if(PORTC.F2 == 1)
         {
-            // SW3 - Full step CCW
-          Lcd_Cmd(_LCD_CLEAR);
-          Lcd_Out(1,1,"FULL STEP CCW");
-          
-          WordToStr(delay_time, delay_txt);
-          Lcd_Out(2,1,"DELAY:");
-          Lcd_Out(2,7,delay_txt);
-          Lcd_Out(2,13,"ms");
-          
-          FullStepCCW();
+            Lcd_Out(1,1,"FULL STEP CCW   ");
+
+            ShowDelay();
+
+            RunMotor(0, 1);
         }
-    
+
+
+        // ---------------------------
+        // SW4 - HALF STEP CCW
+        // ---------------------------
+
         else if(PORTC.F3 == 1)
         {
-            // SW4 - Half step CCW
-            Lcd_Cmd(_LCD_CLEAR);
-            Lcd_Out(1,1,"HALF STEP CCW");
-            
-            WordToStr(delay_time, delay_txt);
-            Lcd_Out(2,1,"DELAY:");
-            Lcd_Out(2,7,delay_txt);
-            Lcd_Out(2,13,"ms");
-            
-            HalfStepCCW();
+            Lcd_Out(1,1,"HALF STEP CCW   ");
+
+            ShowDelay();
+
+            RunMotor(1, 1);
         }
-    
+
+
+        // ---------------------------
+        // NO MOTOR MODE SELECTED
+        // ---------------------------
+
         else
         {
-            // No motor mode selected
             PORTD = 0x00;
+
+            Lcd_Out(1,1,"MOTOR OFF       ");
+            ShowDelay();
         }
-    
-    
-        Delay_ms(50);
+
+
+        Delay_ms(20);
     }
 }
