@@ -1,4 +1,7 @@
-// SW1-SW4 direction/step selection reference
+// SW1-SW8 are active-low:
+// DIP OFF = logic 1, DIP ON = logic 0
+//
+// SW1-SW4 are inverted in software for direction/step selection:
 // SW1 / RC0 ON -> 0001 -> 0x01
 // SW2 / RC1 ON -> 0010 -> 0x02
 // SW3 / RC2 ON -> 0100 -> 0x04
@@ -68,7 +71,7 @@ void runFullStep(unsigned int step_delay) {
    for(i=0; i<4; i++) {
 
       // SW5 - Halt
-      if(PORTC.F4 == 1) {
+      if(PORTC.F4 == 0) {
          PORTD = 0x00;
          return;
       }
@@ -86,7 +89,7 @@ void runCCFullStep(unsigned int step_delay) {
    for(i=0; i<4; i++) {
 
       // SW5 - Halt
-      if(PORTC.F4 == 1) {
+      if(PORTC.F4 == 0) {
          PORTD = 0x00;
          return;
       }
@@ -104,7 +107,7 @@ void runHalfStep(unsigned int step_delay) {
    for(i=0; i<8; i++) {
 
       // SW5 - Halt
-      if(PORTC.F4 == 1) {
+      if(PORTC.F4 == 0) {
          PORTD = 0x00;
          return;
       }
@@ -122,7 +125,7 @@ void runCCHalfStep(unsigned int step_delay) {
    for(i=0; i<8; i++) {
 
       // SW5 - Halt
-      if(PORTC.F4 == 1) {
+      if(PORTC.F4 == 0) {
          PORTD = 0x00;
          return;
       }
@@ -194,8 +197,7 @@ void main()
             // SW1-SW4 = RC0-RC3
             // =====================================
         
-            direction = PORTC & 0x0F;
-        
+            direction = (~PORTC) & 0x0F;
         
             // =====================================
             // SPEED CONTROL
@@ -206,20 +208,21 @@ void main()
         
         
             // SW8 - Potentiometer controls speed
-            // SW8 has priority over SW6/SW7 when analog control is selected
-            if(PORTC.F7 == 1) {
+            // Active-low: SW8 ON = RC7 reads 0
+            // SW8 has priority over SW6/SW7
+            if(PORTC.F7 == 0) {
                 delay_time = readPotDelay();
             }
         
         
             // SW6 - Speed up
-            else if((PORTC.F5 == 1) && (PORTC.F6 == 0)) {
+            else if((PORTC.F5 == 0) && (PORTC.F6 == 1)) {
                 delay_time = 25;
             }
         
         
             // SW7 - Speed down
-            else if((PORTC.F6 == 1) && (PORTC.F5 == 0)) {
+            else if((PORTC.F6 == 0) && (PORTC.F5 == 1)) {
                 delay_time = 100;
             }
         
@@ -229,10 +232,10 @@ void main()
             // =====================================
         
             // SW5 - Halt
-            if(PORTC.F4 == 1) {
+            if(PORTC.F4 == 0) {
                 updateLCD(5, "Mode: HALT");
                 stopMotor();
-        
+            
                 Lcd_Out(2, 1, "Motor stopped");
             }
         
