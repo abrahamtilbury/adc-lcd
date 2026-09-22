@@ -11,12 +11,12 @@
 // LCD CONNECTIONS
 // ===============================
 
-sbit LCD_RS at RB4_bit;
-sbit LCD_EN at RB5_bit;
 sbit LCD_D4 at RB0_bit;
 sbit LCD_D5 at RB1_bit;
 sbit LCD_D6 at RB2_bit;
 sbit LCD_D7 at RB3_bit;
+sbit LCD_RS at RB4_bit;
+sbit LCD_EN at RB5_bit;
 sbit LCD_RS_Direction at TRISB4_bit;
 sbit LCD_EN_Direction at TRISB5_bit;
 sbit LCD_D4_Direction at TRISB0_bit;
@@ -149,7 +149,7 @@ void stopMotor() {
 
 unsigned int readPotDelay() {
    adc_value = ADC_Read(0);
-   return 2 + (adc_value / 4);  // ADC 0-1023 gives approximately 2-257 ms
+   return 257 + (adc_value / 4);  // ADC 0-1023 gives approximately 2-257 ms
 }
 
 // ===============================
