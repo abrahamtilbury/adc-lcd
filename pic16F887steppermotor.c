@@ -149,7 +149,7 @@ void stopMotor() {
 
 unsigned int readPotDelay() {
    adc_value = ADC_Read(0);
-   return 257 + (adc_value / 4);  // ADC 0-1023 gives approximately 2-257 ms
+   return 257 - (adc_value / 4);  // ADC 0-1023 gives approximately 2-257 ms
 }
 
 // ===============================
