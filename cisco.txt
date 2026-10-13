@@ -10,7 +10,7 @@
 ! R2 TO R3 = 70.0.0.0/30
 
                                       !Part1 - Configuration Commands:
-                                      !ROUTER 1
+                     !---------------ROUTER 1----------------------------
 En
 Config t
 hostname R1
@@ -44,7 +44,24 @@ network 20.0.0.0 255.255.255.0
 default-router 20.0.0.1
 exit
 
-                                      !ROUTER 2
+! 04.1 - R1 RIP CONFIGURATION
+router rip
+version 2
+no auto-summary
+network 10.0.0.0
+network 20.0.0.0
+network 60.0.0.0
+exit
+
+! Router 1
+router bgp 65001
+neighbor 70.0.0.2 remote-as 65002
+neighbor 70.0.0.2 ebgp-multihop 2
+network 10.0.0.0 mask 255.255.255.0
+network 20.0.0.0 mask 255.255.255.0
+exit
+
+              !-----------------------ROUTER 2------------------------------
 En
 Config t
 hostname R2
@@ -80,6 +97,22 @@ network 40.0.0.0 255.255.255.0
 default-router 40.0.0.1
 exit
 
+! 04.2 - R2 RIP CONFIGURATION
+router rip
+version 2
+no auto-summary
+network 30.0.0.0
+network 40.0.0.0
+network 60.0.0.0
+exit
+
+! 05.2 - R2 OSPF CONFIGURATION
+router ospf 1
+network 30.0.0.0 0.0.0.255 area 0
+network 40.0.0.0 0.0.0.255 area 0
+network 70.0.0.0 0.0.0.3 area 0
+exit
+
                                       !ROUTER 3
 En
 Config t
@@ -102,64 +135,31 @@ network 50.0.0.0 255.255.255.0
 default-router 50.0.0.1
 exit
 
-!============================================================
-! 04 - RIP VERSION 2 CONFIGURATION
-!============================================================
-
-! 04.1 - R1 RIP CONFIGURATION
-router rip
-version 2
-no auto-summary
-network 10.0.0.0
-network 20.0.0.0
-network 60.0.0.0
-exit
-
-! 04.2 - R2 RIP CONFIGURATION
-router rip
-version 2
-no auto-summary
-network 30.0.0.0
-network 40.0.0.0
-network 60.0.0.0
-exit
-
-!============================================================
-! 05 - OSPF CONFIGURATION
-!============================================================
-
-! 05.2 - R2 OSPF CONFIGURATION
-router ospf 1
-network 30.0.0.0 0.0.0.255 area 0
-network 40.0.0.0 0.0.0.255 area 0
-network 70.0.0.0 0.0.0.3 area 0
-exit
-
-! 05.3 - R3 OSPF CONFIGURATION
+! R3 OSPF CONFIGURATION
 router ospf 1
 network 50.0.0.0 0.0.0.255 area 0
 network 70.0.0.0 0.0.0.3 area 0
 exit
 
-
-!============================================================
-! 06 - BGP CONFIGURATION
-!============================================================
-! Router 1
-router bgp 65001
-neighbor 70.0.0.2 remote-as 65002
-neighbor 70.0.0.2 ebgp-multihop 2
-network 10.0.0.0 mask 255.255.255.0
-network 20.0.0.0 mask 255.255.255.0
-exit
-
-
-! Router 3
+! 06 - Router 3 BGP CONFIGURATION
 router bgp 65002
 neighbor 60.0.0.1 remote-as 65001
 neighbor 60.0.0.1 ebgp-multihop 2
 network 50.0.0.0 mask 255.255.255.0
 exit
+
+! SSH CONFIGURATION
+ip domain-name cisco.com
+username admin privilege 15 secret cisco
+crypto key generate rsa
+! Choose 2048 bits when prompted
+ip ssh version 2
+line vty 0 4
+login local
+transport input ssh
+exit
+end
+write memory
 
 !========Part 2 – Configure Remote Access (SSH)=================================
 !Step 1: Configure a hostname and domain name
@@ -218,9 +218,9 @@ show ip ospf neighbor
 show ip route
 
 ! EXPECT:
-! R1 forms adjacency with R2
-! R2 forms adjacency with R1 and R3
-! R3 forms adjacency with R2
+! R1 does not run OSPF.
+! R2 forms OSPF adjacency with R3.
+! R3 forms OSPF adjacency with R2.
 
 !============================================================
 ! 08.3 - BGP VERIFICATION
@@ -230,6 +230,6 @@ show ip bgp summary
 show ip route
 
 ! EXPECT:
-! R1 establishes BGP session with R2
-! R2 establishes BGP sessions with R1 and R3
-! R3 establishes BGP session with R2
+! R1 establishes BGP session with R3.
+! R2 does not run BGP.
+! R3 establishes BGP session with R1.
