@@ -71,6 +71,10 @@ line vty 0 4
 login local
 transport input ssh
 exit
+line vty 5 15
+login local
+transport input ssh
+exit
 end
 write memory
 
@@ -206,7 +210,9 @@ show ip protocols
 show ip route
 
 ! EXPECT:
-! RIP learned networks appear with R in routing table
+! R1 learns 30.0.0.0/24 and 40.0.0.0/24 via RIP
+! R2 learns 10.0.0.0/24 and 20.0.0.0/24 via RIP
+! R3 does not run RIP
 
 !============================================================
 ! 08.2 - OSPF VERIFICATION
