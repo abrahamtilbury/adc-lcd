@@ -1,18 +1,23 @@
-                                      !===================
-                                      ! 00 - NETWORK ADDRESSING
-                                      !==================
+! R1 LAN 1 = 10.0.0.0/24 - Gateway 10.0.0.1
+! R1 LAN 2 = 20.0.0.0/24 - Gateway 20.0.0.1
 
-                                      ! VLAN 10 = CUSTOMER SERVICE
-                                      ! Network = 192.168.1.0/24
-                                      ! Gateway = 192.168.1.1
+! R2 LAN 1 = 30.0.0.0/24 - Gateway 30.0.0.1
+! R2 LAN 2 = 40.0.0.0/24 - Gateway 40.0.0.1
+
+! R3 LAN 1 = 50.0.0.0/24 - Gateway 50.0.0.1
+
+! R1 TO R2 = 60.0.0.0/30
+! R2 TO R3 = 70.0.0.0/30
 
                                       !Part1 - Configuration Commands:
                                       !ROUTER 1
 En
 Config t
+hostname R1
 int s0/3/0 
 ip add 60.0.0.1 255.255.255.252
 no shut
+exit
 int gig0/0
                                       ! adjusted for /24
 ip add 10.0.0.1 255.255.255.0
@@ -22,6 +27,19 @@ int gig0/1
 ip add 20.0.0.1 255.255.255.0
 no shut
 exit
+
+! R1
+ip dhcp excluded-address 10.0.0.1
+ip dhcp excluded-address 20.0.0.1
+ip route 70.0.0.0 255.255.255.252 60.0.0.2
+
+!R2
+ip dhcp excluded-address 30.0.0.1
+ip dhcp excluded-address 40.0.0.1
+
+!R3
+ip dhcp excluded-address 50.0.0.1
+ip route 60.0.0.0 255.255.255.252 70.0.0.1
 
 service dhcp 
 ip dhcp pool pool1
@@ -37,11 +55,13 @@ exit
                                       !ROUTER 2
 En
 Config t
+hostname R2
 int s0/3/0 
 ip add 60.0.0.2 255.255.255.252
 no shut
 int gig0/0
-/ adjusted for /24
+exit
+                                      ! adjusted for /24
 ip add 30.0.0.1 255.255.255.0
 no shut 
 exit
@@ -64,9 +84,10 @@ network 40.0.0.0 255.255.255.0
 default-router 40.0.0.1
 exit
 
-!ROUTER 3
+                                      !ROUTER 3
 En
 Config t
+hostname R3
 int s0/3/0
 ip add 70.0.0.2 255.255.255.252
 no shut
@@ -81,87 +102,135 @@ ip dhcp pool pool1
 network 50.0.0.0 255.255.255.0
 default-router 50.0.0.1
 exit
-                                      !First use RIP routing protocol
-                                      !On R1 & R2 configure the following commands
-Router rip 
-network 10.0.0.0
-network 20.0.0.0
-network 30.0.0.0
-                                        !Second use OSPF routing protocol
-                                        !On R1 & R2 configure the following commands
+
+!============================================================
+! 04 - RIP VERSION 2 CONFIGURATION
+!============================================================
+
+! 04.1 - R1 RIP CONFIGURATION
 router rip
 version 2
 no auto-summary
 network 10.0.0.0
 network 20.0.0.0
 network 60.0.0.0
+exit
 
+! 04.2 - R2 RIP CONFIGURATION
 router rip
 version 2
 no auto-summary
 network 30.0.0.0
 network 40.0.0.0
 network 60.0.0.0
-network 70.0.0.0
+exit
 
-router ospf 1
-network 10.0.0.0 0.0.0.255 area 0
-network 20.0.0.0 0.0.0.255 area 0
-network 60.0.0.0 0.0.0.3 area 0
+!============================================================
+! 05 - OSPF CONFIGURATION
+!============================================================
 
+! 05.2 - R2 OSPF CONFIGURATION
 router ospf 1
 network 30.0.0.0 0.0.0.255 area 0
 network 40.0.0.0 0.0.0.255 area 0
-network 60.0.0.0 0.0.0.3 area 0
 network 70.0.0.0 0.0.0.3 area 0
+exit
 
+! 05.3 - R3 OSPF CONFIGURATION
 router ospf 1
 network 50.0.0.0 0.0.0.255 area 0
 network 70.0.0.0 0.0.0.3 area 0
+exit
 
-router rip
-version 2
-no auto-summary
-network 50.0.0.0
-network 70.0.0.0
-                                        !Third use BGP routing protocol
-                                        !On R1 configure the following commands
+
+!============================================================
+! 06 - BGP CONFIGURATION
+!============================================================
 ! Router 1
-router bgp 15
-neighbor 60.0.0.2 remote-as 30
+router bgp 65001
+neighbor 70.0.0.2 remote-as 65002
+neighbor 70.0.0.2 ebgp-multihop 2
 network 10.0.0.0 mask 255.255.255.0
 network 20.0.0.0 mask 255.255.255.0
-
-! Router 2
-router bgp 30
-neighbor 60.0.0.1 remote-as 15
-neighbor 70.0.0.2 remote-as 45
-network 30.0.0.0 mask 255.255.255.0
-network 40.0.0.0 mask 255.255.255.0
+exit
 
 
 ! Router 3
-router bgp 45
-neighbor 70.0.0.1 remote-as 30
+router bgp 65002
+neighbor 60.0.0.1 remote-as 65001
+neighbor 60.0.0.1 ebgp-multihop 2
 network 50.0.0.0 mask 255.255.255.0
+exit
 
-!Part 2 – Configure Remote Access (SSH)
+!========Part 2 – Configure Remote Access (SSH)=================================
 !Step 1: Configure a hostname and domain name
 En
 Config t
 hostname R1
 ip domain-name cisco.com
+
 !Step 2: Create a user account
 username admin privilege 15 secret cisco
+
 !Step 3: Generate RSA keys for SSH
 crypto key generate rsa
-!  			(choose 1024 or 2048 bits)
+! (choose 1024 or 2048 bits)
+
 !Step 4: Enable SSH on vty lines
 ip ssh version 2
 line vty 0 4
 login local
 transport input ssh
 exit
+
 !Step 5: Save configuration
+end
 write memory
-!👉 Repeat same steps on R2, adjusting hostname if needed.
+
+! Repeat SSH configuration on R2 and R3
+! Use their corresponding hostnames
+! Generate separate RSA keys on each router
+
+!============================================================
+! 08 - FINAL CONFIGURATION VERIFICATION
+!============================================================
+
+! Run on R1, R2 and R3
+show ip interface brief
+show ip route
+show ip dhcp pool
+show ip dhcp binding
+
+!============================================================
+! 08.1 - RIP VERIFICATION
+!============================================================
+
+show ip protocols
+show ip route
+
+! EXPECT:
+! RIP learned networks appear with R in routing table
+
+!============================================================
+! 08.2 - OSPF VERIFICATION
+!============================================================
+
+show ip ospf neighbor
+show ip route
+
+! EXPECT:
+! R1 forms adjacency with R2
+! R2 forms adjacency with R1 and R3
+! R3 forms adjacency with R2
+
+!============================================================
+! 08.3 - BGP VERIFICATION
+!============================================================
+
+show ip bgp summary
+show ip route
+
+! EXPECT:
+! R1 establishes BGP session with R2
+! R2 establishes BGP sessions with R1 and R3
+! R3 establishes BGP session with R2
