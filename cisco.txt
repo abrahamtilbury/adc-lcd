@@ -1,0 +1,167 @@
+                                      !===================
+                                      ! 00 - NETWORK ADDRESSING
+                                      !==================
+
+                                      ! VLAN 10 = CUSTOMER SERVICE
+                                      ! Network = 192.168.1.0/24
+                                      ! Gateway = 192.168.1.1
+
+                                      !Part1 - Configuration Commands:
+                                      !ROUTER 1
+En
+Config t
+int s0/3/0 
+ip add 60.0.0.1 255.255.255.252
+no shut
+int gig0/0
+                                      ! adjusted for /24
+ip add 10.0.0.1 255.255.255.0
+no shut 
+exit
+int gig0/1
+ip add 20.0.0.1 255.255.255.0
+no shut
+exit
+
+service dhcp 
+ip dhcp pool pool1
+                                      ! adjusted for /24
+network 10.0.0.0 255.255.255.0
+default-router 10.0.0.1
+exit
+ip dhcp pool pool2
+network 20.0.0.0 255.255.255.0
+default-router 20.0.0.1
+exit
+
+                                      !ROUTER 2
+En
+Config t
+int s0/3/0 
+ip add 60.0.0.2 255.255.255.252
+no shut
+int gig0/0
+/ adjusted for /24
+ip add 30.0.0.1 255.255.255.0
+no shut 
+exit
+int gig0/1
+ip add 40.0.0.1 255.255.255.0
+no shut
+exit
+int s0/3/1
+ip add 70.0.0.1 255.255.255.252
+no shut
+exit
+
+service dhcp 
+ip dhcp pool pool1
+network 30.0.0.0 255.255.255.0
+default-router 30.0.0.1
+exit
+ip dhcp pool pool2
+network 40.0.0.0 255.255.255.0
+default-router 40.0.0.1
+exit
+
+!ROUTER 3
+En
+Config t
+int s0/3/0
+ip add 70.0.0.2 255.255.255.252
+no shut
+exit
+int gig0/0
+ip add 50.0.0.1 255.255.255.0
+no shut
+exit
+
+service dhcp
+ip dhcp pool pool1
+network 50.0.0.0 255.255.255.0
+default-router 50.0.0.1
+exit
+                                      !First use RIP routing protocol
+                                      !On R1 & R2 configure the following commands
+Router rip 
+network 10.0.0.0
+network 20.0.0.0
+network 30.0.0.0
+                                        !Second use OSPF routing protocol
+                                        !On R1 & R2 configure the following commands
+router rip
+version 2
+no auto-summary
+network 10.0.0.0
+network 20.0.0.0
+network 60.0.0.0
+
+router rip
+version 2
+no auto-summary
+network 30.0.0.0
+network 40.0.0.0
+network 60.0.0.0
+network 70.0.0.0
+
+router ospf 1
+network 10.0.0.0 0.0.0.255 area 0
+network 20.0.0.0 0.0.0.255 area 0
+network 60.0.0.0 0.0.0.3 area 0
+
+router ospf 1
+network 30.0.0.0 0.0.0.255 area 0
+network 40.0.0.0 0.0.0.255 area 0
+network 60.0.0.0 0.0.0.3 area 0
+network 70.0.0.0 0.0.0.3 area 0
+
+router ospf 1
+network 50.0.0.0 0.0.0.255 area 0
+network 70.0.0.0 0.0.0.3 area 0
+
+router rip
+version 2
+no auto-summary
+network 50.0.0.0
+network 70.0.0.0
+                                        !Third use BGP routing protocol
+                                        !On R1 configure the following commands
+! Router 1
+router bgp 15
+neighbor 60.0.0.2 remote-as 30
+network 10.0.0.0 mask 255.255.255.0
+network 20.0.0.0 mask 255.255.255.0
+
+! Router 2
+router bgp 30
+neighbor 60.0.0.1 remote-as 15
+neighbor 70.0.0.2 remote-as 45
+network 30.0.0.0 mask 255.255.255.0
+network 40.0.0.0 mask 255.255.255.0
+
+
+! Router 3
+router bgp 45
+neighbor 70.0.0.1 remote-as 30
+network 50.0.0.0 mask 255.255.255.0
+
+!Part 2 – Configure Remote Access (SSH)
+!Step 1: Configure a hostname and domain name
+En
+Config t
+hostname R1
+ip domain-name cisco.com
+!Step 2: Create a user account
+username admin privilege 15 secret cisco
+!Step 3: Generate RSA keys for SSH
+crypto key generate rsa
+!  			(choose 1024 or 2048 bits)
+!Step 4: Enable SSH on vty lines
+ip ssh version 2
+line vty 0 4
+login local
+transport input ssh
+exit
+!Step 5: Save configuration
+write memory
+!👉 Repeat same steps on R2, adjusting hostname if needed.
