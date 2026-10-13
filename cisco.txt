@@ -61,6 +61,20 @@ network 10.0.0.0 mask 255.255.255.0
 network 20.0.0.0 mask 255.255.255.0
 exit
 
+! R1 SSH CONFIGURATION
+ip domain-name cisco.com
+username admin privilege 15 secret cisco
+crypto key generate rsa
+! Choose 2048 bits when prompted
+ip ssh version 2
+line vty 0 4
+login local
+transport input ssh
+exit
+end
+write memory
+
+
               !-----------------------ROUTER 2------------------------------
 En
 Config t
@@ -113,6 +127,19 @@ network 40.0.0.0 0.0.0.255 area 0
 network 70.0.0.0 0.0.0.3 area 0
 exit
 
+! R2 SSH CONFIGURATION
+ip domain-name cisco.com
+username admin privilege 15 secret cisco
+crypto key generate rsa
+! Choose 2048 bits when prompted
+ip ssh version 2
+line vty 0 4
+login local
+transport input ssh
+exit
+end
+write memory
+
                                       !ROUTER 3
 En
 Config t
@@ -160,35 +187,6 @@ transport input ssh
 exit
 end
 write memory
-
-!========Part 2 – Configure Remote Access (SSH)=================================
-!Step 1: Configure a hostname and domain name
-En
-Config t
-hostname R1
-ip domain-name cisco.com
-
-!Step 2: Create a user account
-username admin privilege 15 secret cisco
-
-!Step 3: Generate RSA keys for SSH
-crypto key generate rsa
-! (choose 1024 or 2048 bits)
-
-!Step 4: Enable SSH on vty lines
-ip ssh version 2
-line vty 0 4
-login local
-transport input ssh
-exit
-
-!Step 5: Save configuration
-end
-write memory
-
-! Repeat SSH configuration on R2 and R3
-! Use their corresponding hostnames
-! Generate separate RSA keys on each router
 
 !============================================================
 ! 08 - FINAL CONFIGURATION VERIFICATION
