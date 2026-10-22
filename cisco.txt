@@ -8,10 +8,8 @@
 
 ! R1 TO R2 = 60.0.0.0/30
 ! R2 TO R3 = 70.0.0.0/30
-
-                                      !Part1 - Configuration Commands:
-                     !---------------ROUTER 1----------------------------
-En
+              
+En                                    !-----------R1 Configuration--------
 Config t
 hostname R1
 int s0/3/0 
@@ -19,7 +17,7 @@ ip add 60.0.0.1 255.255.255.252
 no shut
 exit
 int gig0/0
-                                      ! adjusted for /24
+                                    
 ip add 10.0.0.1 255.255.255.0
 no shut 
 exit
@@ -28,7 +26,6 @@ ip add 20.0.0.1 255.255.255.0
 no shut
 exit
 
-! R1
 ip dhcp excluded-address 10.0.0.1
 ip dhcp excluded-address 20.0.0.1
 ip route 70.0.0.0 255.255.255.252 60.0.0.2
@@ -44,8 +41,7 @@ network 20.0.0.0 255.255.255.0
 default-router 20.0.0.1
 exit
 
-! 04.1 - R1 RIP CONFIGURATION
-router rip
+router rip                        ! ----------R1 - RIP V2------------------
 version 2
 no auto-summary
 network 10.0.0.0
@@ -53,7 +49,6 @@ network 20.0.0.0
 network 60.0.0.0
 exit
 
-! Router 1
 router bgp 65001
 neighbor 70.0.0.2 remote-as 65002
 neighbor 70.0.0.2 ebgp-multihop 2
@@ -65,8 +60,8 @@ exit
 ip domain-name cisco.com
 username admin privilege 15 secret cisco
 crypto key generate rsa
-! Choose 2048 bits when prompted
-!                                           router 1 paste upto here  ! 
+                                          ! Choose 2048 bits when prompted
+                                          !  router 1 paste upto here  ! 
 ip ssh version 2
 line vty 0 4
 login local
@@ -115,9 +110,8 @@ ip dhcp pool pool2
 network 40.0.0.0 255.255.255.0
 default-router 40.0.0.1
 exit
-
-! 04.2 - R2 RIP CONFIGURATION
-router rip
+                 
+router rip                ! -----------R2 RIP CONFIGURATION--------
 version 2
 no auto-summary
 network 30.0.0.0
@@ -201,9 +195,7 @@ exit
 end
 write memory
 
-!============================================================
-! 08 - FINAL CONFIGURATION VERIFICATION
-!============================================================
+! 08 - VERIFICATION COMMANDS
 
 ! Run on R1, R2 and R3
 show ip interface brief
@@ -212,10 +204,7 @@ show ip dhcp pool
 show ip dhcp binding
 show ip ssh
 
-!============================================================
 ! 08.1 - RIP VERIFICATION
-!============================================================
-
 show ip protocols
 show ip route
 
@@ -224,10 +213,7 @@ show ip route
 ! R2 learns 10.0.0.0/24 and 20.0.0.0/24 via RIP
 ! R3 does not run RIP
 
-!============================================================
 ! 08.2 - OSPF VERIFICATION
-!============================================================
-
 show ip ospf neighbor
 show ip route
 
@@ -236,10 +222,7 @@ show ip route
 ! R2 forms OSPF adjacency with R3.
 ! R3 forms OSPF adjacency with R2.
 
-!============================================================
 ! 08.3 - BGP VERIFICATION
-!============================================================
-
 show ip bgp summary
 show ip route
 
