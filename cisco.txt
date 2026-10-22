@@ -66,6 +66,7 @@ ip domain-name cisco.com
 username admin privilege 15 secret cisco
 crypto key generate rsa
 ! Choose 2048 bits when prompted
+!                                           router 1 paste upto here  ! 
 ip ssh version 2
 line vty 0 4
 login local
@@ -209,7 +210,7 @@ show ip interface brief
 show ip route
 show ip dhcp pool
 show ip dhcp binding
-show ip ssh`
+show ip ssh
 
 !============================================================
 ! 08.1 - RIP VERIFICATION
