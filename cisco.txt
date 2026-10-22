@@ -278,4 +278,10 @@ ping <PC8_IP>
 ! 1. DHCP addresses using ipconfig
 ! 2. DHCP leases using show ip dhcp binding
 ! 3. Successful SSH login
+
+! Command Prompt commands:
+ssh -l admin 50.0.0.1       ! (PC0 to R3)
+ssh -l admin 10.0.0.1        ! (PC4 to R1)
+ssh -l admin 30.0.0.1        ! (PC8 to R2)
+
 ! 4. Successful inter-LAN pings
