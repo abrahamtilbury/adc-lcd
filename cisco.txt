@@ -1,4 +1,4 @@
-! R1 LAN 1 = 10.0.0.0/24 - Gateway 10.0.0.1
+! R1 LAN 1 = 10.0.0.0/24 - Gateway 10.0.0.1   ! 01: IP ADDRESSING PLAN
 ! R1 LAN 2 = 20.0.0.0/24 - Gateway 20.0.0.1
 
 ! R2 LAN 1 = 30.0.0.0/24 - Gateway 30.0.0.1
@@ -9,7 +9,7 @@
 ! R1 TO R2 = 60.0.0.0/30
 ! R2 TO R3 = 70.0.0.0/30
               
-En                                    !-----------R1 Configuration--------
+En                                            ! 02: R1 Configuration
 Config t
 hostname R1
 int s0/3/0 
@@ -26,7 +26,7 @@ ip add 20.0.0.1 255.255.255.0
 no shut
 exit
 
-ip dhcp excluded-address 10.0.0.1
+ip dhcp excluded-address 10.0.0.1           ! 02.3: DHCP Configuration
 ip dhcp excluded-address 20.0.0.1
 ip route 70.0.0.0 255.255.255.252 60.0.0.2
 
@@ -41,7 +41,7 @@ network 20.0.0.0 255.255.255.0
 default-router 20.0.0.1
 exit
 
-router rip                        ! ----------R1 - RIP V2------------------
+router rip                                ! 02.4: R1 - RIP V2
 version 2
 no auto-summary
 network 10.0.0.0
@@ -49,19 +49,17 @@ network 20.0.0.0
 network 60.0.0.0
 exit
 
-router bgp 65001
+router bgp 65001                          ! 02.5: R1 BGP Configuration
 neighbor 70.0.0.2 remote-as 65002
 neighbor 70.0.0.2 ebgp-multihop 2
 network 10.0.0.0 mask 255.255.255.0
 network 20.0.0.0 mask 255.255.255.0
 exit
 
-! R1 SSH CONFIGURATION
-ip domain-name cisco.com
+ip domain-name cisco.com                  ! 02.6: R1 SSH CONFIGURATION
 username admin privilege 15 secret cisco
-crypto key generate rsa
-                                          ! Choose 2048 bits when prompted
-                                          !  router 1 paste upto here  ! 
+crypto key generate rsa                  ! Choose 2048 bits when prompted, paste upto here
+                                          
 ip ssh version 2
 line vty 0 4
 login local
@@ -73,10 +71,8 @@ transport input ssh
 exit
 end
 write memory
-
-
-              !-----------------------ROUTER 2------------------------------
-En
+                      
+En                                        !03: ROUTER 2
 Config t
 hostname R2
 int s0/3/0 
@@ -84,9 +80,8 @@ ip add 60.0.0.2 255.255.255.252
 no shut
 exit
 int gig0/0
-
-                                      ! adjusted for /24
-ip add 30.0.0.1 255.255.255.0
+                             
+ip add 30.0.0.1 255.255.255.0        ! adjusted for /24
 no shut 
 exit
 int gig0/1
@@ -111,7 +106,7 @@ network 40.0.0.0 255.255.255.0
 default-router 40.0.0.1
 exit
                  
-router rip                ! -----------R2 RIP CONFIGURATION--------
+router rip                                    ! 03.3: R2 RIP CONFIGURATION
 version 2
 no auto-summary
 network 30.0.0.0
@@ -119,18 +114,16 @@ network 40.0.0.0
 network 60.0.0.0
 exit
 
-! 05.2 - R2 OSPF CONFIGURATION
-router ospf 1
+router ospf 1                                  ! 03.4: R2 OSPF CONFIGURATION
 network 30.0.0.0 0.0.0.255 area 0
 network 40.0.0.0 0.0.0.255 area 0
 network 70.0.0.0 0.0.0.3 area 0
 exit
 
-! R2 SSH CONFIGURATION
-ip domain-name cisco.com
+ip domain-name cisco.com                      ! 03.5: R2 SSH CONFIGURATION
 username admin privilege 15 secret cisco
-crypto key generate rsa
-! Choose 2048 bits when prompted
+crypto key generate rsa                      ! Choose 2048 bits when prompted, paste upto here
+
 ip ssh version 2
 line vty 0 4
 login local
@@ -142,8 +135,7 @@ transport input ssh
 exit
 end
 write memory
-
-                                      !ROUTER 3
+                                              ! 04: ROUTER 3
 En
 Config t
 hostname R3
@@ -159,30 +151,27 @@ exit
 ip dhcp excluded-address 50.0.0.1
 ip route 60.0.0.0 255.255.255.252 70.0.0.1
 
-service dhcp
+service dhcp                                    ! 04.3: R3 DHCP configuration
 ip dhcp pool pool1
 network 50.0.0.0 255.255.255.0
 default-router 50.0.0.1
 exit
 
-! R3 OSPF CONFIGURATION
-router ospf 1
+router ospf 1                                  ! 04.4: R3 OSPF CONFIGURATION
 network 50.0.0.0 0.0.0.255 area 0
 network 70.0.0.0 0.0.0.3 area 0
 exit
 
-! 06 - Router 3 BGP CONFIGURATION
-router bgp 65002
+router bgp 65002                                ! 04.5: Router 3 BGP CONFIGURATION
 neighbor 60.0.0.1 remote-as 65001
 neighbor 60.0.0.1 ebgp-multihop 2
 network 50.0.0.0 mask 255.255.255.0
 exit
 
-! SSH CONFIGURATION
-ip domain-name cisco.com
+ip domain-name cisco.com                          ! 04.6: SSH CONFIGURATION
 username admin privilege 15 secret cisco
-crypto key generate rsa
-! Choose 2048 bits when prompted
+crypto key generate rsa                      ! Choose 2048 bits when prompted, paste upto here
+
 ip ssh version 2
 line vty 0 4
 login local
@@ -195,17 +184,13 @@ exit
 end
 write memory
 
-! 08 - VERIFICATION COMMANDS
-
-! Run on R1, R2 and R3
-show ip interface brief
+show ip interface brief          ! 05: VERIFICATION COMMANDS, Run on R1, R2 and R3
 show ip route
 show ip dhcp pool
 show ip dhcp binding
 show ip ssh
 
-! 08.1 - RIP VERIFICATION
-show ip protocols
+show ip protocols                        ! 05.2: RIP VERIFICATION
 show ip route
 
 ! EXPECT:
@@ -213,8 +198,7 @@ show ip route
 ! R2 learns 10.0.0.0/24 and 20.0.0.0/24 via RIP
 ! R3 does not run RIP
 
-! 08.2 - OSPF VERIFICATION
-show ip ospf neighbor
+show ip ospf neighbor                  ! 05.3: OSPF VERIFICATION
 show ip route
 
 ! EXPECT:
@@ -222,11 +206,76 @@ show ip route
 ! R2 forms OSPF adjacency with R3.
 ! R3 forms OSPF adjacency with R2.
 
-! 08.3 - BGP VERIFICATION
-show ip bgp summary
+
+show ip bgp summary                    ! 05.4: BGP VERIFICATION
 show ip route
 
 ! EXPECT:
 ! R1 establishes BGP session with R3.
 ! R2 does not run BGP.
 ! R3 establishes BGP session with R1.
+
+
+! 05.5 - DHCP, SSH AND PING TESTING
+
+! 05.5.1 - DHCP VERIFICATION
+! Set all PCs to DHCP under Desktop > IP Configuration.
+! Run ipconfig on each PC to verify IP address and gateway.
+
+! PC0-PC1: 10.0.0.0/24, gateway 10.0.0.1
+! PC2-PC3: 20.0.0.0/24, gateway 20.0.0.1
+! PC4-PC5: 30.0.0.0/24, gateway 30.0.0.1
+! PC6-PC7: 40.0.0.0/24, gateway 40.0.0.1
+! PC8-PC9: 50.0.0.0/24, gateway 50.0.0.1
+
+! Run on each PC:
+ipconfig
+
+! Run on R1, R2 and R3:
+show ip dhcp binding
+show ip dhcp pool
+
+
+! 05.5.2 - SSH VERIFICATION
+! Run from PC0, under Desktop > Command Prompt.
+! Enter admin password when prompted.
+! Exit each router session before testing the next.
+
+! R1
+ssh -l admin 10.0.0.1
+
+! R2
+ssh -l admin 30.0.0.1
+
+! R3
+ssh -l admin 50.0.0.1
+
+
+! 05.5.3 - INTER-LAN PING TESTING
+! Replace placeholders with actual DHCP-assigned PC addresses.
+! Test all 10 different LAN pairs.
+
+! From PC0 - LAN10
+ping <PC2_IP>
+ping <PC4_IP>
+ping <PC6_IP>
+ping <PC8_IP>
+
+! From PC2 - LAN20
+ping <PC4_IP>
+ping <PC6_IP>
+ping <PC8_IP>
+
+! From PC4 - LAN30
+ping <PC6_IP>
+ping <PC8_IP>
+
+! From PC6 - LAN40
+ping <PC8_IP>
+
+! 05.5.4 - VERIFICATION EVIDENCE
+! Save screenshots of:
+! 1. DHCP addresses using ipconfig
+! 2. DHCP leases using show ip dhcp binding
+! 3. Successful SSH login
+! 4. Successful inter-LAN pings
