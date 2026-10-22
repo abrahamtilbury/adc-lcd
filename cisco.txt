@@ -32,7 +32,7 @@ ip route 70.0.0.0 255.255.255.252 60.0.0.2
 
 service dhcp 
 ip dhcp pool pool1
-                                      ! adjusted for /24
+                                     
 network 10.0.0.0 255.255.255.0
 default-router 10.0.0.1
 exit
@@ -51,7 +51,6 @@ exit
 
 router bgp 65001                          ! 02.5: R1 BGP Configuration
 neighbor 70.0.0.2 remote-as 65002
-neighbor 70.0.0.2 ebgp-multihop 2
 network 10.0.0.0 mask 255.255.255.0
 network 20.0.0.0 mask 255.255.255.0
 exit
@@ -81,7 +80,7 @@ no shut
 exit
 int gig0/0
                              
-ip add 30.0.0.1 255.255.255.0        ! adjusted for /24
+ip add 30.0.0.1 255.255.255.0      
 no shut 
 exit
 int gig0/1
