@@ -1,0 +1,22 @@
+flowchart TD
+    A[Photograph factory dash and connectors] --> B[Disconnect negative battery terminal]
+    B --> C[Remove factory fascia and radio]
+    C --> D[Compare every factory plug with supplied eBay harness]
+    D --> E{Harness matches without cutting?}
+    E -- No --> F[Stop and contact seller / return unit]
+    E -- Yes --> G[Bench-connect head unit in dash]
+    G --> H[Test CarPlay, radio, SWC and both speaker channels]
+    H --> I{Everything works?}
+    I -- No --> J[Troubleshoot before reassembly]
+    I -- Yes --> K[Route USB/GPS/mic/camera leads as desired]
+    K --> L[Refit new fascia and head unit]
+    L --> M[Remove front door trims]
+    M --> N[Install APS311 spacers]
+    N --> O[Connect APS32 adapters]
+    O --> P[Install Pioneer speakers]
+    P --> Q[Test window travel and audio]
+    Q --> R[Refit door trims]
+    R --> S[Drive and assess bass for 1–2 weeks]
+    S --> T{Still want more low-end?}
+    T -- Yes --> U[Measure cabin location and add quality powered sub]
+    T -- No --> V[Project complete]
