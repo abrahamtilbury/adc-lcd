@@ -1,7 +1,7 @@
 /*
  * Practical Assessment 7 - ABRAHAM TILBURY 30127103
  * LM35 Temperature Fan Control
- * LED threshold indicator and C/F selection
+ * RC0 fan control, RD0 status LED and C/F selection
  * PIC16F887
  */
 
@@ -28,7 +28,8 @@ sbit LCD_D7_Direction at TRISB3_bit;
 unsigned int adcValue;
 float temperatureC;       // Measured temperature in Celsius
 float displayTemperature; // Celsius or Fahrenheit for LCD
-unsigned short ledOn = 0;
+unsigned short fanOn = 0;  // Fan control state
+unsigned short ledOn = 0;  // LED indicator state
 char temperatureText[15];
 
 // 3. MAIN PROGRAM
@@ -49,9 +50,13 @@ void main() {
     TRISA1_bit = 1;  // PIC pin 3: RA1/AN1, LM35 output
     TRISA2_bit = 1;  // PIC pin 4: RA2/AN2, LM335 output
 
-    // LED output
-    TRISD0_bit = 0;  // PIC pin 19: RD0 output
-    RD0_bit = 0;     // LED initially OFF
+    // Fan-driver output (RC0, pin 15)
+    TRISC0_bit = 0;
+    RC0_bit = 0;
+    
+    // LED indicator output (RD0, pin 19)
+    TRISD0_bit = 0;
+    RD0_bit = 0;
     
     // DIP switch input
     TRISD7_bit = 1;  // PIC pin 30: RD7 input
@@ -75,16 +80,21 @@ void main() {
        // 5. TEMPERATURE INDICATOR WITH HYSTERESIS
         // LED ON above 28 C, OFF below 26 C
         
+       // 5. FAN CONTROL WITH HYSTERESIS
+
         if (temperatureC > 28.0) {
-            ledOn = 1;
+            fanOn = 1;
         }
         else if (temperatureC < 26.0) {
-            ledOn = 0;
+            fanOn = 0;
         }
         
-        // Update LED connected to RD0 (pin 19)
-        RD0_bit = ledOn;
-
+        // LED mirrors the fan command
+        ledOn = fanOn;
+        
+        // Update both outputs
+        RC0_bit = fanOn;  // Fan-driver command, pin 15
+        RD0_bit = ledOn;  // LED indicator, pin 19
 
         // 6. LCD TEMPERATURE DISPLAY (C / F SELECTION)
          // DIP OFF (open), RD7 HIGH (1), temp .00 C 
@@ -113,11 +123,11 @@ void main() {
         
         // 7. LCD LED STATUS 
        
-        if (ledOn == 1) {
-            Lcd_Out(2, 1, "LED: ON         ");
+        if (fanOn == 1) {
+            Lcd_Out(2, 1, "Fan: ON         ");
         }
         else {
-            Lcd_Out(2, 1, "LED: OFF        ");
+            Lcd_Out(2, 1, "Fan: OFF        ");
         }
 
         Delay_ms(250);
