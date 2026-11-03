@@ -1,8 +1,8 @@
-
 /*
- * Practical Assessment 7
- * Part A - LM35 Temperature Fan Control
- * PIC16F887 | MikroC PRO for PIC
+ * Practical Assessment 7 - ABRAHAM TILBURY 30127103
+ * LM35 Temperature Fan Control
+ * LED threshold indicator and C/F selection
+ * PIC16F887
  */
 
 // 1. LCD CONNECTIONS (4-bit mode)
@@ -37,9 +37,9 @@ void main() {
     // External 4 MHz ceramic resonator on OSC1/OSC2
     // Oscillator mode: XT (configured in MikroC project)
 
-    // Enable AN1 (LM35) and AN2 (LM335)
-        ANSEL = 0x06;
-        ANSELH = 0x00;
+    // Enable analogue inputs AN1 and AN2
+    ANSEL = 0x06;   // AN1 = LM35, AN2 = LM335
+    ANSELH = 0x00;  // Disable analogue inputs AN8-AN13
 
     // Disable comparators
     C1ON_bit = 0;
@@ -55,10 +55,6 @@ void main() {
     
     // DIP switch input
     TRISD7_bit = 1;  // PIC pin 30: RD7 input
-    
-    // Additional hardware
-    // RD0, PIC pin 19: LED
-    // RD7, PIC pin 30: DIP switch
 
     // Initialise ADC and LCD
     ADC_Init();
@@ -69,8 +65,8 @@ void main() {
     // 4. CONTINUOUS CONTROL LOOP
     while(1) {
 
-        // Read LM35 on AN0
-        adcValue = ADC_Read(1);    // Read LM35 on AN1
+        // Read LM35 on AN1 (RA1, PIC pin 3)
+        adcValue = ADC_Read(1);
         
         // Convert LM35 ADC reading to Celsius
         temperatureC = (adcValue * 500.0) / 1023.0;
@@ -91,7 +87,8 @@ void main() {
 
 
         // 6. LCD TEMPERATURE DISPLAY (C / F SELECTION)
-
+         // DIP OFF (open), RD7 HIGH (1), temp .00 C 
+        // DIP ON (CLOSED), RD7 LOW (0), temp .00 F
         // RD7 is connected to the DIP switch.
         // Assumes external pull-up: LOW = switch ON.
         
@@ -115,8 +112,7 @@ void main() {
         Lcd_Out(1, 7, temperatureText);
         
         // 7. LCD LED STATUS 
-        // DIP OFF (open), RD7 HIGH (1), temp .00 C 
-        // DIP ON (CLOSED), RD7 LOW (0), temp .00 F
+       
         if (ledOn == 1) {
             Lcd_Out(2, 1, "LED: ON         ");
         }
