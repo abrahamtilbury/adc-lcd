@@ -20,8 +20,8 @@ sbit LCD_D7_Direction at TRISB3_bit;
 
 // 2. PROGRAM VARIABLES
 unsigned int adcValue;
-float temperatureC;           // Measured temperature in Celsius
-float displayTemperature;     // Celsius or Fahrenheit for LCD
+unsigned int temperatureC;           // Measured temperature in Celsius
+unsigned int displayTemperature;     // Celsius or Fahrenheit for LCD
 unsigned short fanOn = 0;      // Fan control state
 unsigned short ledOn = 0;      // LED indicator state
 char temperatureText[15];
