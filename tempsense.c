@@ -68,7 +68,7 @@ void main() {
         adcValue = ADC_Read(1);
         
         // Convert LM35 ADC reading to Celsius
-        temperatureC = (adcValue * 500.0) / 1023.0;
+        temperatureC = (unsigned long adcValue * 5000) / 1023;
 
        // 5. TEMP INDICATOR WITH HYSTERESIS
         // LED ON above 28 C, OFF below 26 C
