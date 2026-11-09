@@ -20,11 +20,28 @@ sbit LCD_D7_Direction at TRISB3_bit;
 
 // 2. PROGRAM VARIABLES
 unsigned int adcValue;
-unsigned int temperatureC;           // Celsius temperature multiplied by 10 (e.g. 283 = 28.3 C)
-unsigned int displayTemperature;     	// Selected C/F temperature multiplied by 10 for LCD
-unsigned short fanOn = 0;      // Fan control state
-unsigned short ledOn = 0;      // LED indicator state
+unsigned int temperatureC;          // Celsius temperature multiplied by 10 (e.g. 283 = 28.3 C)
+unsigned int displayTemperature;    // Selected C/F temperature multiplied by 10 for LCD
+unsigned int adcLM335;              // 	Raw 10-bit reading from AN2
+signed int temperatureLM335C;       // LM335 temperature in Celsius × 10
+signed int displayLM335;            // LM335 temperature in the selected display unit × 10
+unsigned short fanOn = 0;           // Fan control state
+unsigned short ledOn = 0;           // LED indicator state
 char temperatureText[15];
+
+void FormatTenths(signed int value, char *out) {
+    unsigned int magnitude;
+
+    magnitude = (value < 0) ? (unsigned int)(-value) : (unsigned int)value;
+
+    out[0] = (value < 0) ? '-' : ' ';
+    out[1] = (magnitude >= 1000) ? ((magnitude / 1000) % 10) + '0' : ' ';
+    out[2] = (magnitude >= 100) ? ((magnitude / 100) % 10) + '0' : ' ';
+    out[3] = ((magnitude / 10) % 10) + '0';
+    out[4] = '.';
+    out[5] = (magnitude % 10) + '0';
+    out[6] = '\0';
+}
 
 // 3. MAIN
 void main() {
@@ -41,8 +58,8 @@ void main() {
     C2ON_bit = 0;
 
     // Configure temperature sensor inputs
-    TRISA1_bit = 1;  // PIC pin 3: RA1/AN1, LM35 output
-    TRISA2_bit = 1;  // PIC pin 4: RA2/AN2, LM335 output
+    TRISA1_bit = 1;      // PIC pin 3: RA1/AN1, LM35 output
+    TRISA2_bit = 1;      // PIC pin 4: RA2/AN2, LM335 output
 
     // Fan-driver output (RC0, pin 15)
     TRISC0_bit = 0;
@@ -60,22 +77,30 @@ void main() {
     Lcd_Init();
     Lcd_Cmd(_LCD_CLEAR);
     Lcd_Cmd(_LCD_CURSOR_OFF);
+    Lcd_Out(1, 1, "35:");
+    Lcd_Out(2, 1, "335:");
 
     // 4. CONTINUOUS CONTROL LOOP
     while(1) {
 
         // Read LM35 on AN1 (RA1, PIC pin 3)
-        adcValue = ADC_Read(1);
+        adcValue = ADC_Read(1);     // LM35 on AN1
+        adcLM335 = ADC_Read(2);     // LM335 on AN2
         
         // Convert LM35 ADC reading to Celsius
         temperatureC = ((unsigned long)adcValue * 5000) / 1023;
 
-       // 5. FAN CONTROL WITH HYSTERESIS
-        // ON at ADC >= 58, OFF at ADC <= 53; retain state between thresholds
-        if (adcValue >= 58) {
+        // Convert LM335 ADC reading from Kelvin to Celsius x 10
+        temperatureLM335C =
+            (signed int)(((unsigned long)adcLM335 * 5000) / 1023) - 2732;
+        
+        // 5. FAN CONTROL WITH HYSTERESIS
+        // Either sensor can turn the fan ON
+        if ((temperatureC >= 280) || (temperatureLM335C >= 280)) {
             fanOn = 1;
         }
-        else if (adcValue <= 53) {
+        // Both sensors must be cool before switching OFF
+        else if ((temperatureC < 260) && (temperatureLM335C < 260)) {
             fanOn = 0;
         }
         
@@ -87,42 +112,43 @@ void main() {
         RD0_bit = ledOn;  // LED indicator, pin 19
 
         // 6. LCD TEMP DISPLAY (C/F SELECT)
-         // DIP OFF (open), RD7 HIGH (1), display temperature as 0.0 C
+        // DIP OFF (open), RD7 HIGH (1), display temperature as 0.0 C
         // DIP ON (closed), RD7 LOW (0), display temperature as 0.0 F
         // RD7 is connected to the DIP switch.
         // Assumes external pull-up: LOW = switch ON.
         
-        // Select display units
+        // Select display units for BOTH sensors
         if (RD7_bit == 0) {
-            // DIP switch ON: Fahrenheit
             displayTemperature = (temperatureC * 9 / 5) + 320;
-            Lcd_Out(1, 13, "F");
+            displayLM335 = (temperatureLM335C * 9 / 5) + 320;
+        
+            Lcd_Chr(1, 11, 'F');
+            Lcd_Chr(2, 12, 'F');
         }
         else {
-            // DIP switch OFF: Celsius
             displayTemperature = temperatureC;
-            Lcd_Out(1, 13, "C");
+            displayLM335 = temperatureLM335C;
+        
+            Lcd_Chr(1, 11, 'C');
+            Lcd_Chr(2, 12, 'C');
         }
 
-        // Convert integer temperature to LCD text (one decimal place)
-        temperatureText[0] = (displayTemperature >= 1000) ? (displayTemperature / 1000) + '0' : ' ';
-        temperatureText[1] = (displayTemperature >= 100) ? ((displayTemperature / 100) % 10) + '0' : ' ';
-        temperatureText[2] = ((displayTemperature / 10) % 10) + '0';
-        temperatureText[3] = '.';
-        temperatureText[4] = (displayTemperature % 10) + '0';
-        temperatureText[5] = '\0';
+        // Display LM35 temperature on row 1
+        FormatTenths((signed int)displayTemperature, temperatureText);
+        Lcd_Out(1, 5, temperatureText);
         
-        // Update LCD
-        Lcd_Out(1, 1, "Temp:       ");
-        Lcd_Out(1, 7, temperatureText);
+        // Display LM335 temperature on row 2
+        FormatTenths(displayLM335, temperatureText);
+        Lcd_Out(2, 6, temperatureText);
         
         // 7. LCD LED STATUS 
        
+        // Fan status at the end of LCD row 1
         if (fanOn == 1) {
-            Lcd_Out(2, 1, "Fan: ON         ");
+            Lcd_Out(1, 13, "ON ");
         }
         else {
-            Lcd_Out(2, 1, "Fan: OFF        ");
+            Lcd_Out(1, 13, "OFF");
         }
 
         Delay_ms(250);
