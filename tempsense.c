@@ -1,11 +1,10 @@
 // PracAss 7 - 30127103 - Temperature Fan Control
 // RC0 fan control, RD0 status LED and C/F selection
 // 1. LCD CONNECTIONS (4-bit mode)
-// Control pins
 sbit LCD_RS at RB4_bit;      // PIC pin 37 -> LCD RS
 sbit LCD_EN at RB5_bit;      // PIC pin 38 -> LCD E
 
-// Data pins
+// Data
 sbit LCD_D4 at RB0_bit;      // PIC pin 33 -> LCD D4
 sbit LCD_D5 at RB1_bit;      // PIC pin 34 -> LCD D5
 sbit LCD_D6 at RB2_bit;      // PIC pin 35 -> LCD D6
@@ -27,7 +26,7 @@ unsigned short fanOn = 0;      // Fan control state
 unsigned short ledOn = 0;      // LED indicator state
 char temperatureText[15];
 
-// 3. MAIN PROGRAM
+// 3. MAIN
 void main() {
 
     // 4MHz OSC1/OSC2
@@ -71,10 +70,8 @@ void main() {
         // Convert LM35 ADC reading to Celsius
         temperatureC = (adcValue * 500.0) / 1023.0;
 
-
        // 5. TEMP INDICATOR WITH HYSTERESIS
         // LED ON above 28 C, OFF below 26 C
-        
        // 5. FAN CONTROL WITH HYSTERESIS
         if (temperatureC > 28.0) {
             fanOn = 1;
@@ -90,7 +87,7 @@ void main() {
         RC0_bit = fanOn;  // Fan-driver command, pin 15
         RD0_bit = ledOn;  // LED indicator, pin 19
 
-        // 6. LCD TEMPERATURE DISPLAY (C / F SELECTION)
+        // 6. LCD TEMP DISPLAY (C/F SELECT)
          // DIP OFF (open), RD7 HIGH (1), temp .00 C 
         // DIP ON (CLOSED), RD7 LOW (0), temp .00 F
         // RD7 is connected to the DIP switch.
