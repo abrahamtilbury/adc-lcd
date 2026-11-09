@@ -68,15 +68,15 @@ void main() {
         adcValue = ADC_Read(1);
         
         // Convert LM35 ADC reading to Celsius
-        temperatureC = (unsigned long adcValue * 5000) / 1023;
+        temperatureC = ((unsigned long)adcValue * 5000) / 1023;
 
        // 5. TEMP INDICATOR WITH HYSTERESIS
         // LED ON above 28 C, OFF below 26 C
        // 5. FAN CONTROL WITH HYSTERESIS
-        if (temperatureC > 28.0) {
+        if (adcValue >= 58) {
             fanOn = 1;
         }
-        else if (temperatureC < 26.0) {
+        else if (adcValue <= 53) {
             fanOn = 0;
         }
         
@@ -96,7 +96,7 @@ void main() {
         // Select display units
         if (RD7_bit == 0) {
             // DIP switch ON: Fahrenheit
-            displayTemperature = (temperatureC * 9.0 / 5.0) + 32.0;
+            displayTemperature = (temperatureC * 9 / 5) + 320;
             Lcd_Out(1, 13, "F");
         }
         else {
