@@ -28,6 +28,7 @@ signed int displayLM335;            // LM335 temperature in the selected display
 unsigned short fanOn = 0;           // Fan control state
 unsigned short ledOn = 0;           // LED indicator state
 char temperatureText[15];
+unsigned short lm335Fault = 0;
 
 void FormatTenths(signed int value, char *out) {
     unsigned int magnitude;
@@ -83,7 +84,7 @@ void main() {
     // 4. CONTINUOUS CONTROL LOOP
     while(1) {
 
-        // Read LM35 on AN1 (RA1, PIC pin 3)
+        // Read both sensors: LM35 on AN1, LM335 on AN2
         adcValue = ADC_Read(1);     // LM35 on AN1
         adcLM335 = ADC_Read(2);     // LM335 on AN2
         
@@ -93,14 +94,22 @@ void main() {
         // Convert LM335 ADC reading from Kelvin to Celsius x 10
         temperatureLM335C =
             (signed int)(((unsigned long)adcLM335 * 5000) / 1023) - 2732;
+
+        // Check LM335 reading against its operating range
+        lm335Fault = (adcLM335 < 477) || (adcLM335 > 764);
         
         // 5. FAN CONTROL WITH HYSTERESIS
-        // Either sensor can turn the fan ON
-        if ((temperatureC >= 320) || (temperatureLM335C >= 320)) {
+
+        // Sensor fault: command fan ON
+        if (lm335Fault == 1) {
             fanOn = 1;
         }
-        // Both sensors must be cool before switching OFF
-        else if ((temperatureC < 300) && (temperatureLM335C < 300)) {
+        // Either sensor reaches 28.0 C
+        else if ((temperatureC >= 280) || (temperatureLM335C >= 280)) {
+            fanOn = 1;
+        }
+        // Both sensors fall below 26.0 C
+        else if ((temperatureC < 260) && (temperatureLM335C < 260)) {
             fanOn = 0;
         }
         
@@ -137,12 +146,17 @@ void main() {
         FormatTenths((signed int)displayTemperature, temperatureText);
         Lcd_Out(1, 5, temperatureText);
         
-        // Display LM335 temperature on row 2
-        FormatTenths(displayLM335, temperatureText);
-        Lcd_Out(2, 6, temperatureText);
+        // Display LM335 temperature or fault
+        if (lm335Fault == 1) {
+            Lcd_Out(2, 6, "FAULT  ");
+        }
+        else {
+            FormatTenths(displayLM335, temperatureText);
+            Lcd_Out(2, 6, temperatureText);
+        }
         
-        // 7. LCD LED STATUS 
-       
+        // 7. LCD FAN STATUS 
+    
         // Fan status at the end of LCD row 1
         if (fanOn == 1) {
             Lcd_Out(1, 13, "ON ");
