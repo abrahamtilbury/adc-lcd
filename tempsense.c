@@ -1,10 +1,5 @@
-/*
- * Practical Assessment 7 - ABRAHAM TILBURY 30127103
- * LM35 Temperature Fan Control
- * RC0 fan control, RD0 status LED and C/F selection
- * PIC16F887
- */
-
+// PracAss 7 - 30127103 - Temperature Fan Control
+// RC0 fan control, RD0 status LED and C/F selection
 // 1. LCD CONNECTIONS (4-bit mode)
 // Control pins
 sbit LCD_RS at RB4_bit;      // PIC pin 37 -> LCD RS
@@ -35,10 +30,10 @@ char temperatureText[15];
 // 3. MAIN PROGRAM
 void main() {
 
-    // External 4 MHz ceramic resonator on OSC1/OSC2
-    // Oscillator mode: XT (configured in MikroC project)
+    // 4MHz OSC1/OSC2
+    // Oscillator mode: XT
 
-    // Enable analogue inputs AN1 and AN2
+    // Enable AN1 and AN2
     ANSEL = 0x06;   // AN1 = LM35, AN2 = LM335
     ANSELH = 0x00;  // Disable analogue inputs AN8-AN13
 
@@ -61,7 +56,7 @@ void main() {
     // DIP switch input
     TRISD7_bit = 1;  // PIC pin 30: RD7 input
 
-    // Initialise ADC and LCD
+    // Init ADC and LCD
     ADC_Init();
     Lcd_Init();
     Lcd_Cmd(_LCD_CLEAR);
@@ -77,11 +72,10 @@ void main() {
         temperatureC = (adcValue * 500.0) / 1023.0;
 
 
-       // 5. TEMPERATURE INDICATOR WITH HYSTERESIS
+       // 5. TEMP INDICATOR WITH HYSTERESIS
         // LED ON above 28 C, OFF below 26 C
         
        // 5. FAN CONTROL WITH HYSTERESIS
-
         if (temperatureC > 28.0) {
             fanOn = 1;
         }
