@@ -105,9 +105,6 @@ void main() {
             Lcd_Out(1, 13, "C");
         }
         
-        // Convert selected temperature into display text
-        FloatToStr_FixLen(displayTemperature, temperatureText, 5);
-        
         // Update LCD
         Lcd_Out(1, 1, "Temp:       ");
         Lcd_Out(1, 7, temperatureText);
