@@ -20,8 +20,8 @@ sbit LCD_D7_Direction at TRISB3_bit;
 
 // 2. PROGRAM VARIABLES
 unsigned int adcValue;
-unsigned int temperatureC;           // Measured temperature in Celsius
-unsigned int displayTemperature;     // Celsius or Fahrenheit for LCD
+unsigned int temperatureC;           // Celsius temperature multiplied by 10 (e.g. 283 = 28.3 C)
+unsigned int displayTemperature;     	// Selected C/F temperature multiplied by 10 for LCD
 unsigned short fanOn = 0;      // Fan control state
 unsigned short ledOn = 0;      // LED indicator state
 char temperatureText[15];
@@ -70,9 +70,8 @@ void main() {
         // Convert LM35 ADC reading to Celsius
         temperatureC = ((unsigned long)adcValue * 5000) / 1023;
 
-       // 5. TEMP INDICATOR WITH HYSTERESIS
-        // LED ON above 28 C, OFF below 26 C
        // 5. FAN CONTROL WITH HYSTERESIS
+        // ON at ADC >= 58, OFF at ADC <= 53; retain state between thresholds
         if (adcValue >= 58) {
             fanOn = 1;
         }
@@ -88,8 +87,8 @@ void main() {
         RD0_bit = ledOn;  // LED indicator, pin 19
 
         // 6. LCD TEMP DISPLAY (C/F SELECT)
-         // DIP OFF (open), RD7 HIGH (1), temp .00 C 
-        // DIP ON (CLOSED), RD7 LOW (0), temp .00 F
+         // DIP OFF (open), RD7 HIGH (1), display temperature as 0.0 C
+        // DIP ON (closed), RD7 LOW (0), display temperature as 0.0 F
         // RD7 is connected to the DIP switch.
         // Assumes external pull-up: LOW = switch ON.
         
@@ -104,6 +103,14 @@ void main() {
             displayTemperature = temperatureC;
             Lcd_Out(1, 13, "C");
         }
+
+        // Convert integer temperature to LCD text (one decimal place)
+        temperatureText[0] = (displayTemperature >= 1000) ? (displayTemperature / 1000) + '0' : ' ';
+        temperatureText[1] = (displayTemperature >= 100) ? ((displayTemperature / 100) % 10) + '0' : ' ';
+        temperatureText[2] = ((displayTemperature / 10) % 10) + '0';
+        temperatureText[3] = '.';
+        temperatureText[4] = (displayTemperature % 10) + '0';
+        temperatureText[5] = '\0';
         
         // Update LCD
         Lcd_Out(1, 1, "Temp:       ");
