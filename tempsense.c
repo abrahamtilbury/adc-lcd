@@ -96,11 +96,11 @@ void main() {
         
         // 5. FAN CONTROL WITH HYSTERESIS
         // Either sensor can turn the fan ON
-        if ((temperatureC >= 280) || (temperatureLM335C >= 280)) {
+        if ((temperatureC >= 320) || (temperatureLM335C >= 320)) {
             fanOn = 1;
         }
         // Both sensors must be cool before switching OFF
-        else if ((temperatureC < 260) && (temperatureLM335C < 260)) {
+        else if ((temperatureC < 300) && (temperatureLM335C < 300)) {
             fanOn = 0;
         }
         
