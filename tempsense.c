@@ -7,14 +7,14 @@
 
 // 1. LCD CONNECTIONS (4-bit mode)
 // Control pins
-sbit LCD_RS at RB4_bit;  // PIC pin 37 -> LCD RS
-sbit LCD_EN at RB5_bit;  // PIC pin 38 -> LCD E
+sbit LCD_RS at RB4_bit;      // PIC pin 37 -> LCD RS
+sbit LCD_EN at RB5_bit;      // PIC pin 38 -> LCD E
 
 // Data pins
-sbit LCD_D4 at RB0_bit;  // PIC pin 33 -> LCD D4
-sbit LCD_D5 at RB1_bit;  // PIC pin 34 -> LCD D5
-sbit LCD_D6 at RB2_bit;  // PIC pin 35 -> LCD D6
-sbit LCD_D7 at RB3_bit;  // PIC pin 36 -> LCD D7
+sbit LCD_D4 at RB0_bit;      // PIC pin 33 -> LCD D4
+sbit LCD_D5 at RB1_bit;      // PIC pin 34 -> LCD D5
+sbit LCD_D6 at RB2_bit;      // PIC pin 35 -> LCD D6
+sbit LCD_D7 at RB3_bit;      // PIC pin 36 -> LCD D7
 
 // Pin directions (0 = output)
 sbit LCD_RS_Direction at TRISB4_bit;
@@ -26,10 +26,10 @@ sbit LCD_D7_Direction at TRISB3_bit;
 
 // 2. PROGRAM VARIABLES
 unsigned int adcValue;
-float temperatureC;       // Measured temperature in Celsius
-float displayTemperature; // Celsius or Fahrenheit for LCD
-unsigned short fanOn = 0;  // Fan control state
-unsigned short ledOn = 0;  // LED indicator state
+float temperatureC;           // Measured temperature in Celsius
+float displayTemperature;     // Celsius or Fahrenheit for LCD
+unsigned short fanOn = 0;      // Fan control state
+unsigned short ledOn = 0;      // LED indicator state
 char temperatureText[15];
 
 // 3. MAIN PROGRAM
