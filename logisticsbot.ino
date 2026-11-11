@@ -17,11 +17,30 @@ const unsigned long ECHO_TIMEOUT_US = 25000UL;   // Stop waiting for an ECHO aft
 const float SENSOR_MIN_CM = 2.0f;        // Minimum accepted measurement: 2 cm
 const float SENSOR_MAX_CM = 400.0f;      // Maximum accepted measurement: 400 cm
 
+{
 void setup()
-  Serial.begin(115200)  
-  pinMode(21, OUTPUT);         // senseRight_PIN_TRIG
-  pinMode(22, OUTPUT);         // senseLeft_PIN_TRIG
-  pinMode(23, OUTPUT);         // senseFront_PIN_TRIG
-  pinMode(32, INPUT);          // senseRight_PIN_ECHO
-  pinMode(33, INPUT);          // senseLeft_PIN_ECHO
-  pinMode(34, INPUT);          // senseFront_PIN_ECHO
+  Serial.begin(115200);
+  pinMode(senseRight_PIN_TRIG, OUTPUT);         // senseRight_PIN_TRIG
+  pinMode(senseLeft_PIN_TRIG, OUTPUT);         // senseLeft_PIN_TRIG
+  pinMode(senseFront_PIN_TRIG, OUTPUT);         // senseFront_PIN_TRIG
+  pinMode(senseRight_PIN_ECHO, INPUT);          // senseRight_PIN_ECHO
+  pinMode(senseLeft_PIN_ECHO, INPUT);          // senseLeft_PIN_ECHO
+  pinMode(senseFront_PIN_ECHO, INPUT);          // senseFront_PIN_ECHO
+}
+
+loop()
+  read front sensor
+    write list[1]
+  read left sensor
+    write list[2]
+  read right sensor
+    write list[3]
+  rotate wheels 45 degrees (maybe write a function that does this?
+  read front sensor
+    write list[4]
+  read left sensor
+    write list[5]
+  read right sensor
+    write list[6]
+  wait 10uS
+  
