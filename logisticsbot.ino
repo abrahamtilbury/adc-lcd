@@ -17,8 +17,7 @@ const unsigned long ECHO_TIMEOUT_US = 25000UL;   // Stop waiting for an ECHO aft
 const float SENSOR_MIN_CM = 2.0f;        // Minimum accepted measurement: 2 cm
 const float SENSOR_MAX_CM = 400.0f;      // Maximum accepted measurement: 400 cm
 
-{
-void setup()
+void setup() {
   Serial.begin(115200);
   pinMode(senseRight_PIN_TRIG, OUTPUT);         // senseRight_PIN_TRIG
   pinMode(senseLeft_PIN_TRIG, OUTPUT);         // senseLeft_PIN_TRIG
