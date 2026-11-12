@@ -9,9 +9,12 @@ const int senseRight_PIN_TRIG  = 21;
 const int senseRight_PIN_ECHO  = 32;
 const int ESTOP_PIN = 25;
 
-const int leftMotor_PWM  = 18;
-const int leftMotor_DIR  = 26;
-const int leftMotor_DIR  = 26;
+const int leftMotor_PWM  = 18;  // L298N ENA
+const int rightMotor_PWM  = 19;  // L298N ENB
+const leftMotor_IN1  = 26;      // L298N IN1
+const leftMotor_IN2  = 27;      // L298N IN2
+const rightMotor_IN3  = 14;     // L298N IN1
+const rightMotor_IN4  = 13;      // L298N IN2
 
 const unsigned long SENSOR_GAP_MS = 65;          // Wait at least 65 milliseconds between ultrasonic trigger pulses
 const unsigned long ECHO_TIMEOUT_US = 25000UL;   // Stop waiting for an ECHO after 25,000 microseconds (25 ms)
