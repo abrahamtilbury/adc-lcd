@@ -9,12 +9,12 @@ const int senseRight_PIN_TRIG  = 21;
 const int senseRight_PIN_ECHO  = 32;
 const int ESTOP_PIN = 25;
 
-const int leftMotor_PWM  = 18;  // L298N ENA
-const int rightMotor_PWM  = 19;  // L298N ENB
-const leftMotor_IN1  = 26;      // L298N IN1
-const leftMotor_IN2  = 27;      // L298N IN2
-const rightMotor_IN3  = 14;     // L298N IN1
-const rightMotor_IN4  = 13;      // L298N IN2
+const int leftMotor_PWM  = 18;      // L298N ENA
+const int rightMotor_PWM  = 19;     // L298N ENB
+const int leftMotor_IN1  = 26;      // L298N IN1
+const int leftMotor_IN2  = 27;      // L298N IN2
+const int rightMotor_IN3  = 14;     // L298N IN3
+const int rightMotor_IN4  = 13;     // L298N IN4
 
 const unsigned long SENSOR_GAP_MS = 65;          // Wait at least 65 milliseconds between ultrasonic trigger pulses
 const unsigned long ECHO_TIMEOUT_US = 25000UL;   // Stop waiting for an ECHO after 25,000 microseconds (25 ms)
@@ -29,9 +29,28 @@ void setup() {
   pinMode(senseRight_PIN_ECHO, INPUT);          // senseRight_PIN_ECHO
   pinMode(senseLeft_PIN_ECHO, INPUT);          // senseLeft_PIN_ECHO
   pinMode(senseFront_PIN_ECHO, INPUT);          // senseFront_PIN_ECHO
+
+  pinMode(leftMotor_IN1, OUTPUT);
+  pinMode(leftMotor_IN2, OUTPUT);
+  pinMode(rightMotor_IN3, OUTPUT);
+  pinMode(rightMotor_IN4, OUTPUT);
+  pinMode(leftMotor_PWM, OUTPUT);
+  pinMode(rightMotor_PWM, OUTPUT);
+  pinMode(ESTOP_PIN, INPUT_PULLUP);
+  digitalWrite(leftMotor_PWM, LOW);
+  digitalWrite(rightMotor_PWM, LOW);
+  digitalWrite(leftMotor_IN1, LOW);
+  digitalWrite(leftMotor_IN2, LOW);
+  digitalWrite(rightMotor_IN3, LOW);
+  digitalWrite(rightMotor_IN4, LOW);
 }
 
 loop()
+  // TODO: Check emergency stop
+  // TODO: Read front, left and right sensors
+  // TODO: Rotate robot approximately 45 degrees
+  // TODO: Read all three sensors again
+  // TODO: Compare six readings and select movement
   read front sensor
     write list[1]
   read left sensor
