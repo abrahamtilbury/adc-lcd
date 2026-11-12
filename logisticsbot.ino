@@ -45,24 +45,76 @@ void setup() {
   digitalWrite(rightMotor_IN4, LOW);
 }
 
-loop()
-  // TODO: Check emergency stop
-  // TODO: Read front, left and right sensors
-  // TODO: Rotate robot approximately 45 degrees
-  // TODO: Read all three sensors again
-  // TODO: Compare six readings and select movement
-  read front sensor
-    write list[1]
-  read left sensor
-    write list[2]
-  read right sensor
-    write list[3]
-  rotate wheels 45 degrees (maybe write a function that does this?
-  read front sensor
-    write list[4]
-  read left sensor
-    write list[5]
-  read right sensor
-    write list[6]
-  wait 10uS
-  
+
+float readDistanceCm(int trigPin, int echoPin) {
+  // Send a 10 microsecond trigger pulse
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  // Measure how long ECHO remains HIGH
+  unsigned long duration =
+      pulseIn(echoPin, HIGH, ECHO_TIMEOUT_US);
+
+  // No valid echo received
+  if (duration == 0) {
+    return -1.0f;
+  }
+
+  // Convert round-trip travel time to distance
+  float distanceCm = duration * 0.0343f / 2.0f;
+
+  if (distanceCm < SENSOR_MIN_CM ||
+      distanceCm > SENSOR_MAX_CM) {
+    return -1.0f;
+  }
+
+  return distanceCm;
+}
+
+void loop() {
+  // Keep both motors disabled during testing
+  digitalWrite(leftMotor_PWM, LOW);
+  digitalWrite(rightMotor_PWM, LOW);
+
+  // Check emergency-stop button
+  if (digitalRead(ESTOP_PIN) == LOW) {
+    Serial.println("E-STOP PRESSED");
+    delay(100);
+    return;
+  }
+
+  // Read sensors one at a time
+  float frontDistance = readDistanceCm(
+      senseFront_PIN_TRIG, senseFront_PIN_ECHO);
+
+  delay(SENSOR_GAP_MS);
+
+  float leftDistance = readDistanceCm(
+      senseLeft_PIN_TRIG, senseLeft_PIN_ECHO);
+
+  delay(SENSOR_GAP_MS);
+
+  float rightDistance = readDistanceCm(
+      senseRight_PIN_TRIG, senseRight_PIN_ECHO);
+
+  // Display readings
+  Serial.printf(
+      "Front: %.1f cm | Left: %.1f cm | Right: %.1f cm\n",
+      frontDistance,
+      leftDistance,
+      rightDistance
+  );
+
+  // -1 indicates an invalid measurement
+  if (frontDistance < 0 ||
+      leftDistance < 0 ||
+      rightDistance < 0) {
+    Serial.println("WARNING: Invalid sensor reading");
+  }
+
+  delay(200);
+}
