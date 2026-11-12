@@ -9,8 +9,9 @@ const int senseRight_PIN_TRIG  = 21;
 const int senseRight_PIN_ECHO  = 32;
 const int ESTOP_PIN = 25;
 
-const int leftMotor_IN  = 26;
-const int rightMotor_IN  = 27;
+const int leftMotor_PWM  = 18;
+const int leftMotor_DIR  = 26;
+const int leftMotor_DIR  = 26;
 
 const unsigned long SENSOR_GAP_MS = 65;          // Wait at least 65 milliseconds between ultrasonic trigger pulses
 const unsigned long ECHO_TIMEOUT_US = 25000UL;   // Stop waiting for an ECHO after 25,000 microseconds (25 ms)
