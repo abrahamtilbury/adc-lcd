@@ -1,6 +1,7 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <HTTPClient.h>
 
 
 #define TS_ENABLE_SSL
@@ -21,18 +22,27 @@ const int pumpPin = 26;
 const int enablePin = 25;
 const int moisturePin = 34;
 const int refillButtonPin = 0;
+const int pumpLedPin = 16;
+const int emptyLedPin = 17;
+const int manualButtonPin = 18;
 
 const int pumpDuty = 204;  // Fixed 80% PWM
 
 // CALIBRATION
-const int dryThreshold = 2100;  // PROVISIONAL ONLY
-const bool automaticWatering = true;  // Enable after calibration
+const int dryThreshold = 2200;
+const int wetThreshold = 2400;
+
+bool automaticWatering = false;  // OFF during commissioning
+const bool allowRemoteDose = false;
 
 // TIMING
 const unsigned long moistureInterval = 2000;
 const unsigned long pumpDuration = 20000;
+const unsigned long soakDuration = 120000;
 const unsigned long cooldown = 1800000;
-const unsigned long startupDelay = 60000;
+const unsigned long startupDelay = 1800000;
+
+const int maxPulsesPerSession = 3;
 
 // RESERVOIR
 const unsigned int maxDoses = 20;
@@ -47,6 +57,13 @@ const char* wifiPassword = "nintendo";
 // THINGSPEAK
 const unsigned long channelID = 3576823;  // Replace with Channel ID
 const char* writeAPIKey = "QHVPOPTHQMCUE4PW";
+
+// TALKBACK
+const unsigned long talkBackID = 0;
+const char* talkBackKey = "WGE6LSWQHTYVT9IM";
+
+const unsigned long talkBackInterval = 60000;
+unsigned long lastTalkBack = 0;
 
 WiFiClientSecure thingSpeakClient;
 
@@ -72,11 +89,26 @@ bool storageReady = false;
 bool buttonHandled = false;
 
 int dryCount = 0;
+int wetCount = 0;
+
+bool sensorValid = false;
+bool moistureKnown = false;
+bool moistureDry = false;
+
+bool manualRunning = false;
+bool sessionActive = false;
+bool soaking = false;
+bool singleDoseSession = false;
+
+int sessionPulses = 0;
+unsigned long soakStart = 0;
+unsigned long manualStartTime = 0;
 
 // STOP PUMP
 void stopPump() {
   ledcWrite(enablePin, 0);
   digitalWrite(pumpPin, LOW);
+  digitalWrite(pumpLedPin, LOW);
 
   pumpRunning = false;
   pumpHasRun = true;
@@ -100,6 +132,7 @@ void startPump() {
 
   digitalWrite(pumpPin, HIGH);
   ledcWrite(enablePin, pumpDuty);
+  digitalWrite(pumpLedPin, HIGH);
 
   pumpStart = millis();
   pumpRunning = true;
@@ -110,11 +143,32 @@ void startPump() {
   Serial.println(dosesUsed);
 }
 
+void finishSession() {
+  sessionActive = false;
+  soaking = false;
+  singleDoseSession = false;
+  sessionPulses = 0;
+
+  pumpHasRun = true;
+  lastPumpStop = millis();
+  dryCount = 0;
+
+  Serial.println("Watering session finished");
+  Serial.println("30-minute cooldown started");
+}
+
 // SETUP
 void setup() {
   digitalWrite(pumpPin, LOW);
   pinMode(pumpPin, OUTPUT);
   pinMode(refillButtonPin, INPUT_PULLUP);
+  pinMode(manualButtonPin, INPUT_PULLUP);
+
+  pinMode(pumpLedPin, OUTPUT);
+  pinMode(emptyLedPin, OUTPUT);
+
+  digitalWrite(pumpLedPin, LOW);
+  digitalWrite(emptyLedPin, LOW);
 
   Serial.begin(115200);
 
@@ -160,15 +214,79 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-  // Automatic pump timeout
+  // Dose-limit indicator
+  digitalWrite(
+    emptyLedPin,
+    dosesUsed >= maxDoses ? HIGH : LOW
+  );
+
+  // Physical manual hold-to-run control
+  bool manualHeld = digitalRead(manualButtonPin) == LOW;
+
+  if (manualHeld) {
+    if (!manualRunning) {
+
+      if (pumpRunning) {
+        stopPump();
+      }
+
+      if (sessionActive) {
+        finishSession();
+      }
+
+      digitalWrite(pumpPin, HIGH);
+      ledcWrite(enablePin, pumpDuty);
+      digitalWrite(pumpLedPin, HIGH);
+
+      manualRunning = true;
+      manualStartTime = millis();
+      Serial.println("MANUAL PUMP ON");
+    }
+
+    // No software timer while physically held.
+    // Skip Wi-Fi operations during manual pumping.
+    return;
+  }
+
+  if (manualRunning) {
+    ledcWrite(enablePin, 0);
+    digitalWrite(pumpPin, LOW);
+    digitalWrite(pumpLedPin, LOW);
+    Serial.print("Manual pump runtime: ");
+    Serial.print((millis() - manualStartTime) / 1000.0, 1);
+    Serial.println(" seconds");
+    manualRunning = false;
+    finishSession();
+
+    Serial.println("MANUAL PUMP OFF");
+  }
+
+  // Automatic/remote 20-second cutoff
   if (pumpRunning && now - pumpStart >= pumpDuration) {
     stopPump();
+
+    if (sessionActive) {
+      if (singleDoseSession ||
+          sessionPulses >= maxPulsesPerSession) {
+        finishSession();
+      } else {
+        soaking = true;
+        soakStart = millis();
+        Serial.println("Soaking for 2 minutes");
+      }
+    }
   }
 
   // BOOT button: stop pump and reset after 3-second hold
   if (digitalRead(refillButtonPin) == LOW) {
 
-    if (pumpRunning) stopPump();
+    if (pumpRunning) {
+      stopPump();
+    }
+
+    if (sessionActive) {
+      finishSession();
+    }
 
     if (buttonStart == 0) buttonStart = now;
 
@@ -207,20 +325,83 @@ void loop() {
     Serial.print(millivolts);
     Serial.println(" mV");
 
-    // Reject very low or saturated readings
+        // Moisture validation and hysteresis
     if (raw < 300 || raw > 4000) {
+      sensorValid = false;
+      moistureKnown = false;
+      moistureDry = false;
+
       dryCount = 0;
-      Serial.println("Sensor reading outside allowed range");
+      wetCount = 0;
+
+      Serial.println("Invalid moisture reading");
+    } else {
+      sensorValid = true;
+
+      if (raw < dryThreshold) {
+        if (dryCount < 5) dryCount++;
+        wetCount = 0;
+
+        if (dryCount >= 5) {
+          moistureDry = true;
+          moistureKnown = true;
+        }
+      }
+      else if (raw >= wetThreshold) {
+        if (wetCount < 5) wetCount++;
+        dryCount = 0;
+
+        if (wetCount >= 5) {
+          moistureDry = false;
+          moistureKnown = true;
+        }
+      }
+      else {
+        dryCount = 0;
+        wetCount = 0;
+      }
     }
-    else if (raw < dryThreshold) {
-      if (dryCount < 5) dryCount++;
-    }
-    else {
-      dryCount = 0;
+
+    Serial.print("Moisture state: ");
+    if (!sensorValid || !moistureKnown) {
+      Serial.println("UNKNOWN");
+    } else {
+      Serial.println(moistureDry ? "DRY" : "WET");
     }
   }
 
-  // Automatic watering conditions
+    // Finish soak and decide whether another pulse is needed
+  if (sessionActive &&
+      soaking &&
+      !pumpRunning &&
+      now - soakStart >= soakDuration) {
+      
+
+    soaking = false;
+
+    if (!automaticWatering ||
+        !sensorValid ||
+        !moistureKnown ||
+        !moistureDry) {
+
+      finishSession();
+
+    } else {
+
+      startPump();
+
+      if (pumpRunning) {
+        sessionPulses++;
+
+        Serial.print("Session pulse: ");
+        Serial.println(sessionPulses);
+      } else {
+        finishSession();
+      }
+    }
+  }
+
+  // Begin a new automatic watering session
   bool cooldownFinished =
     !pumpHasRun || (now - lastPumpStop >= cooldown);
 
@@ -228,14 +409,105 @@ void loop() {
     automaticWatering &&
     storageReady &&
     !pumpRunning &&
+    !sessionActive &&
     digitalRead(refillButtonPin) == HIGH &&
     now >= startupDelay &&
     cooldownFinished &&
     dosesUsed < maxDoses &&
+    sensorValid &&
+    moistureKnown &&
+    moistureDry &&
     dryCount >= 5
   ) {
 
     startPump();
+
+    if (pumpRunning) {
+      sessionActive = true;
+      singleDoseSession = false;
+      sessionPulses = 1;
+
+      Serial.println("Automatic session started");
+    }
+  }
+
+    // ThingSpeak TalkBack commands
+  if (!pumpRunning &&
+      !manualRunning &&
+      WiFi.status() == WL_CONNECTED &&
+      talkBackID != 0 &&
+      now - lastTalkBack >= talkBackInterval) {
+
+    lastTalkBack = now;
+
+    HTTPClient http;
+    http.setTimeout(3000);
+
+    String url =
+      String("https://api.thingspeak.com/talkbacks/") +
+      String(talkBackID) +
+      "/commands/execute";
+
+    if (http.begin(thingSpeakClient, url)) {
+      http.addHeader(
+        "Content-Type",
+        "application/x-www-form-urlencoded"
+      );
+
+      int response = http.POST(
+        String("api_key=") + talkBackKey
+      );
+
+      if (response == 200) {
+        String command = http.getString();
+        command.trim();
+
+        if (command == "AUTO_ON") {
+          automaticWatering = true;
+          Serial.println("Remote automatic watering ENABLED");
+        }
+        else if (command == "AUTO_OFF") {
+          automaticWatering = false;
+
+          if (sessionActive) {
+            finishSession();
+          }
+
+          Serial.println("Remote automatic watering DISABLED");
+        }
+        else if (command == "DOSE") {
+          bool remoteCooldownFinished =
+            !pumpHasRun ||
+            (millis() - lastPumpStop >= cooldown);
+
+          if (allowRemoteDose &&
+              storageReady &&
+              !sessionActive &&
+              !pumpRunning &&
+              dosesUsed < maxDoses &&
+              millis() >= startupDelay &&
+              remoteCooldownFinished) {
+
+            startPump();
+
+            if (pumpRunning) {
+              sessionActive = true;
+              singleDoseSession = true;
+              sessionPulses = 1;
+
+              Serial.println("Remote single dose started");
+            }
+          } else {
+            Serial.println("Remote dose rejected");
+          }
+        }
+      } else {
+        Serial.print("TalkBack HTTP status: ");
+        Serial.println(response);
+      }
+
+      http.end();
+    }
   }
 
   // Reconnect Wi-Fi only while pump is OFF
@@ -246,75 +518,6 @@ void loop() {
     lastWifiAttempt = now;
     WiFi.reconnect();
   }
-
-
-  // WIFI AND DNS DIAGNOSTICS
-  static unsigned long lastDiagnostic = 0;
-
-  if (now - lastDiagnostic >= 30000) {
-    lastDiagnostic = now;
-
-    Serial.println("----- NETWORK DIAGNOSTICS -----");
-
-    Serial.print("WiFi status: ");
-    Serial.println(WiFi.status());
-
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.print("IP address: ");
-      Serial.println(WiFi.localIP());
-
-      Serial.print("Signal strength: ");
-      Serial.print(WiFi.RSSI());
-      Serial.println(" dBm");
-
-      Serial.print("Gateway: ");
-      Serial.println(WiFi.gatewayIP());
-
-      IPAddress resolvedIP;
-      int dnsResult = WiFi.hostByName(
-        "api.thingspeak.com", resolvedIP
-      );
-
-      Serial.print("DNS result: ");
-      Serial.println(dnsResult);
-
-
-      // Test TCP connectivity to ThingSpeak
-      WiFiClient tcpProbe;
-
-      Serial.print("TCP port 443: ");
-
-      if (tcpProbe.connect("api.thingspeak.com", 443)) {
-        Serial.println("CONNECTED");
-        tcpProbe.stop();
-      } else {
-        Serial.println("FAILED");
-      }
-
-      // Test HTTPS/TLS handshake
-      WiFiClientSecure tlsProbe;
-      tlsProbe.setInsecure();
-
-      Serial.print("HTTPS/TLS: ");
-
-      if (tlsProbe.connect("api.thingspeak.com", 443)) {
-        Serial.println("CONNECTED");
-        tlsProbe.stop();
-      } else {
-        Serial.println("FAILED");
-      }
-
-
-      Serial.print("ThingSpeak IP: ");
-      Serial.println(resolvedIP);
-
-    } else {
-      Serial.println("WiFi disconnected");
-    }
-
-    Serial.println("-------------------------------");
-  }
-
 
   // Upload to ThingSpeak every 30 seconds
   if (!pumpRunning &&
@@ -327,8 +530,8 @@ void loop() {
     // Soil status: -1 invalid, 0 wet, 1 dry
     int soilStatus = -1;
 
-    if (latestSoilADC >= 300 && latestSoilADC <= 4000) {
-      soilStatus = latestSoilADC < dryThreshold ? 1 : 0;
+    if (sensorValid && moistureKnown) {
+      soilStatus = moistureDry ? 1 : 0;
     }
 
     // Estimated reservoir remaining
@@ -340,8 +543,11 @@ void loop() {
     ThingSpeak.setField(3, soilStatus);
     ThingSpeak.setField(4, (int)dosesUsed);
     ThingSpeak.setField(5, waterRemaining);
+    ThingSpeak.setField(6, automaticWatering ? 1 : 0);
+    ThingSpeak.setField(7, soaking ? 2 : (sessionActive ? 1 : 0));
 
     int result = ThingSpeak.writeFields(channelID, writeAPIKey);
+    
 
     if (result == 200) {
       Serial.println("ThingSpeak upload successful");
