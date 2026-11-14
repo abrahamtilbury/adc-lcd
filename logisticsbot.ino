@@ -21,8 +21,54 @@ const unsigned long ECHO_TIMEOUT_US = 25000UL;   // Stop waiting for an ECHO aft
 const float SENSOR_MIN_CM = 2.0f;        // Minimum accepted measurement: 2 cm
 const float SENSOR_MAX_CM = 400.0f;      // Maximum accepted measurement: 400 cm
 
+
+void stopMotors() {
+  digitalWrite(leftMotor_PWM, LOW);
+  digitalWrite(rightMotor_PWM, LOW);
+
+  digitalWrite(leftMotor_IN1, LOW);
+  digitalWrite(leftMotor_IN2, LOW);
+  digitalWrite(rightMotor_IN3, LOW);
+  digitalWrite(rightMotor_IN4, LOW);
+}
+
+
+volatile bool estopLatched = false;
+
+void ARDUINO_ISR_ATTR onEmergencyStop() {
+  estopLatched = true;
+}
+
+
+const int MAP_SIZE = 7;
+int8_t tileMap[MAP_SIZE][MAP_SIZE];
+
+void initialiseMap() {
+  for (int row = 0; row < MAP_SIZE; row++) {
+    for (int col = 0; col < MAP_SIZE; col++) {
+      tileMap[row][col] = -1;
+    }
+  }
+
+  tileMap[3][3] = 0;
+}
+
+void printMap() {
+  for (int row = 0; row < MAP_SIZE; row++) {
+    for (int col = 0; col < MAP_SIZE; col++) {
+      Serial.printf("%3d", tileMap[row][col]);
+    }
+    Serial.println();
+  }
+}
+
+
 void setup() {
   Serial.begin(115200);
+  
+  initialiseMap();
+  printMap();
+
   pinMode(senseRight_PIN_TRIG, OUTPUT);         // senseRight_PIN_TRIG
   pinMode(senseLeft_PIN_TRIG, OUTPUT);         // senseLeft_PIN_TRIG
   pinMode(senseFront_PIN_TRIG, OUTPUT);         // senseFront_PIN_TRIG
@@ -37,6 +83,16 @@ void setup() {
   pinMode(leftMotor_PWM, OUTPUT);
   pinMode(rightMotor_PWM, OUTPUT);
   pinMode(ESTOP_PIN, INPUT_PULLUP);
+  if (digitalRead(ESTOP_PIN) == LOW) {
+    estopLatched = true;
+  }
+  
+  attachInterrupt(
+      digitalPinToInterrupt(ESTOP_PIN),
+      onEmergencyStop,
+      FALLING
+  );
+
   digitalWrite(leftMotor_PWM, LOW);
   digitalWrite(rightMotor_PWM, LOW);
   digitalWrite(leftMotor_IN1, LOW);
@@ -81,11 +137,15 @@ void loop() {
   digitalWrite(rightMotor_PWM, LOW);
 
   // Check emergency-stop button
-  if (digitalRead(ESTOP_PIN) == LOW) {
-    Serial.println("E-STOP PRESSED");
+  
+  if (estopLatched || digitalRead(ESTOP_PIN) == LOW) {
+    estopLatched = true;
+    stopMotors();
+    Serial.println("E-STOP LATCHED");
     delay(100);
     return;
   }
+
 
   // Read sensors one at a time
   float frontDistance = readDistanceCm(
@@ -116,5 +176,19 @@ void loop() {
     Serial.println("WARNING: Invalid sensor reading");
   }
 
+  
+  if (frontDistance < 0 ||
+      leftDistance < 0 ||
+      rightDistance < 0) {
+    Serial.println("Decision: STOP - invalid reading");
+  } else if (leftDistance > rightDistance) {
+    Serial.println("Clearer side: LEFT");
+  } else if (rightDistance > leftDistance) {
+    Serial.println("Clearer side: RIGHT");
+  } else {
+    Serial.println("Clearer side: EQUAL");
+  }
+  
+      
   delay(200);
 }
