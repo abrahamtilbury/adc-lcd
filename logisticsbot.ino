@@ -28,7 +28,11 @@ const unsigned long SENSOR_GAP_MS = 65;          // Wait at least 65 millisecond
 const unsigned long ECHO_TIMEOUT_US = 25000UL;   // Stop waiting for an ECHO after 25,000 microseconds (25 ms)
 const float SENSOR_MIN_CM = 2.0f;        // Minimum accepted measurement: 2 cm
 const float SENSOR_MAX_CM = 400.0f;      // Maximum accepted measurement: 400 cm
-const float FRONT_OBSTACLE_CM = 20.0f; 
+
+const float FRONT_OBSTACLE_CM = 20.0f;
+// Provisional obstacle-detection threshold, not a verified stopping distance.
+// Reassess after measuring motor stopping performance.
+
 const unsigned long SENSOR_REPORT_MS = 1000UL;
 
 /* ============================================================
@@ -64,7 +68,9 @@ void initialiseMap() {
     }
   }
 
-  tileMap[4][4] = 0;
+   tileMap[MAP_SIZE / 2][MAP_SIZE / 2] = 0;
+   // Integer division locates the centre of an odd-sized square map.
+
 }
 
 void printMap() {
@@ -99,6 +105,8 @@ void setup() {
   pinMode(ESTOP_PIN, INPUT_PULLUP);
   
   stopMotors();     // void function: sets motor outputs LOW, returns nothing.
+   Serial.println("LOGISTICS BOT - STATIONARY SENSOR TEST");
+   Serial.println("Motor outputs disabled; E-stop is software-latched.");
   initialiseMap();  // void function: changes the global tileMap array.
   printMap();       // void function: prints the map to Serial.
 
