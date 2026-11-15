@@ -83,12 +83,12 @@ void printMap() {
 void setup() {
   Serial.begin(115200);
 
-  pinMode(senseRight_PIN_TRIG, OUTPUT);         // senseRight_PIN_TRIG
-  pinMode(senseLeft_PIN_TRIG, OUTPUT);         // senseLeft_PIN_TRIG
-  pinMode(senseFront_PIN_TRIG, OUTPUT);         // senseFront_PIN_TRIG
-  pinMode(senseRight_PIN_ECHO, INPUT);          // senseRight_PIN_ECHO
-  pinMode(senseLeft_PIN_ECHO, INPUT);          // senseLeft_PIN_ECHO
-  pinMode(senseFront_PIN_ECHO, INPUT);          // senseFront_PIN_ECHO
+  pinMode(senseRight_PIN_TRIG, OUTPUT);  
+  pinMode(senseLeft_PIN_TRIG, OUTPUT);      
+  pinMode(senseFront_PIN_TRIG, OUTPUT);     
+  pinMode(senseRight_PIN_ECHO, INPUT);      
+  pinMode(senseLeft_PIN_ECHO, INPUT);    
+  pinMode(senseFront_PIN_ECHO, INPUT);        
 
   pinMode(leftMotor_IN1, OUTPUT);
   pinMode(leftMotor_IN2, OUTPUT);
@@ -176,7 +176,6 @@ void readAllDistances(float* front, float* left, float* right) {
    6. MAIN LOOP - STATIONARY SENSOR TESTING
    ============================================================ */
 void loop() {
-  // Keep both motors disabled during testing
   stopMotors();  // Keep both motors disabled throughout this testing stage.
 
   // Check emergency-stop button
@@ -213,12 +212,13 @@ void loop() {
       leftDistance < 0 ||
       rightDistance < 0) {
       Serial.println("Decision: STOP - invalid reading");
-  } else if (leftDistance > rightDistance) {
+  } else if (frontBlocked) {
+      Serial.println("Decision: STOP - front obstacle"); 
+   } else if (leftDistance > rightDistance) {
     Serial.println("Clearer side: LEFT");
   } else if (rightDistance > leftDistance) {
     Serial.println("Clearer side: RIGHT");
-  } else if (frontBlocked) {
-      Serial.println("Decision: STOP - front obstacle"); 
+  
   } else {
     Serial.println("Clearer side: EQUAL");
   }
