@@ -191,7 +191,7 @@ void loop() {
     estopLatched = true;
     stopMotors();
     Serial.println("E-STOP LATCHED");
-    delay(100);
+    delay(1000);
     return;
   }
 
@@ -229,7 +229,5 @@ void loop() {
   } else {
     Serial.println("Clearer side: EQUAL");
   }
-  
-      
-  delay(200);
+  delay(1000);
 }
