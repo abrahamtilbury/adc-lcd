@@ -29,7 +29,7 @@ const unsigned long ECHO_TIMEOUT_US = 25000UL;   // Stop waiting for an ECHO aft
 const float SENSOR_MIN_CM = 2.0f;        // Minimum accepted measurement: 2 cm
 const float SENSOR_MAX_CM = 400.0f;      // Maximum accepted measurement: 400 cm
 const float FRONT_OBSTACLE_CM = 20.0f; 
-
+const unsigned long SENSOR_REPORT_MS = 1000UL;
 
 /* ============================================================
    2. MOTOR CONTROL AND EMERGENCY STOP
@@ -54,7 +54,7 @@ void ARDUINO_ISR_ATTR onEmergencyStop() {
 /* ============================================================
    3. GRID MAP - INITIALISATION AND SERIAL DISPLAY
    ============================================================ */
-const int MAP_SIZE = 7;
+const int MAP_SIZE = 9;
 int8_t tileMap[MAP_SIZE][MAP_SIZE];
 
 void initialiseMap() {
@@ -64,7 +64,7 @@ void initialiseMap() {
     }
   }
 
-  tileMap[3][3] = 0;
+  tileMap[4][4] = 0;
 }
 
 void printMap() {
@@ -156,78 +156,106 @@ float readDistanceCm(int trigPin, int echoPin) {
   return distanceCm;
 }
 
-// Returns true when the front reading is blocked
-// or invalid, otherwise returns false.
+
+ // Only a valid front reading can confirm an obstruction.
 bool isFrontBlocked(float distanceCm) {
-  return distanceCm <= FRONT_OBSTACLE_CM;
+  return distanceCm >= 0.0f && distanceCm <= FRONT_OBSTACLE_CM;
 }
 
+// Three-sample median; two valid samples use the nearer value.
+float readFilteredDistanceCm(int trigPin, int echoPin) {
+  float samples[3];
+  int validCount = 0;
 
-// Pointer parameters allow this function to update
-// three float variables belonging to the caller.
-// The function itself returns no value (void).
+  for (int i = 0; i < 3; i++) {
+    if (estopLatched || digitalRead(ESTOP_PIN) == LOW) {
+      estopLatched = true;
+      return -1.0f;
+    }
+
+    float cm = readDistanceCm(trigPin, echoPin);
+    if (cm >= 0.0f) samples[validCount++] = cm;
+    if (i < 2) delay(SENSOR_GAP_MS);
+  }
+
+  if (validCount < 2) return -1.0f;
+  if (validCount == 2) {
+    return samples[0] < samples[1] ? samples[0] : samples[1];
+  }
+
+  for (int i = 0; i < 2; i++) {
+    for (int j = i + 1; j < 3; j++) {
+      if (samples[i] > samples[j]) {
+        float temp = samples[i];
+        samples[i] = samples[j];
+        samples[j] = temp;
+      }
+    }
+  }
+  return samples[1];
+}
+
+// Update the caller's front, left and right distances.
 void readAllDistances(float* front, float* left, float* right) {
-  // float* parameters store addresses of float variables.
-  // Dereferencing with * changes the original variables in loop().
-
-  *front = readDistanceCm(senseFront_PIN_TRIG, senseFront_PIN_ECHO);
+  *front = readFilteredDistanceCm(senseFront_PIN_TRIG, senseFront_PIN_ECHO);
+  if (estopLatched) return;
   delay(SENSOR_GAP_MS);
 
-  *left = readDistanceCm(senseLeft_PIN_TRIG, senseLeft_PIN_ECHO);
+  *left = readFilteredDistanceCm(senseLeft_PIN_TRIG, senseLeft_PIN_ECHO);
+  if (estopLatched) return;
   delay(SENSOR_GAP_MS);
 
-  *right = readDistanceCm(senseRight_PIN_TRIG, senseRight_PIN_ECHO);
+  *right = readFilteredDistanceCm(senseRight_PIN_TRIG, senseRight_PIN_ECHO);
 }
 
 /* ============================================================
    6. MAIN LOOP - STATIONARY SENSOR TESTING
    ============================================================ */
 void loop() {
-  stopMotors();  // Keep both motors disabled throughout this testing stage.
+  stopMotors();  // Stationary testing only.
 
-  // Check emergency-stop button
-  
+  // 6.1 Physical E-stop input and software latch
   if (estopLatched || digitalRead(ESTOP_PIN) == LOW) {
     estopLatched = true;
-    stopMotors();
-    Serial.println("E-STOP LATCHED");
-    delay(1000);
+    static bool reported = false;
+    if (!reported) {
+      Serial.println("E-STOP LATCHED");
+      reported = true;
+    }
     return;
   }
 
+  // 6.2 Schedule reports; ultrasonic reads are still blocking.
+  static unsigned long lastReportMs = 0;
+  if (millis() - lastReportMs < SENSOR_REPORT_MS) return;
+  lastReportMs = millis();
 
-  // Read sensors one at a time
   float frontDistance = -1.0f;
   float leftDistance = -1.0f;
   float rightDistance = -1.0f;
 
-  // & supplies the addresses of the three variables.
-  // readAllDistances() updates them through its pointer parameters.
   readAllDistances(&frontDistance, &leftDistance, &rightDistance);
-  bool frontBlocked = isFrontBlocked(frontDistance);
 
-  // Display readings
-  Serial.printf(
-      "Front: %.1f cm | Left: %.1f cm | Right: %.1f cm\n",
-      frontDistance,
-      leftDistance,
-      rightDistance
-  );
+  if (estopLatched || digitalRead(ESTOP_PIN) == LOW) {
+    estopLatched = true;
+    return;
+  }
 
-  // -1 indicates an invalid measurement
-  if (frontDistance < 0 ||
-      leftDistance < 0 ||
-      rightDistance < 0) {
-      Serial.println("Decision: STOP - invalid reading");
-  } else if (frontBlocked) {
-      Serial.println("Decision: STOP - front obstacle"); 
-   } else if (leftDistance > rightDistance) {
+  Serial.printf("Front: %.1f cm | Left: %.1f cm | Right: %.1f cm\n",
+                frontDistance, leftDistance, rightDistance);
+
+  // 6.3 Distinguish obstruction from unknown measurements.
+  if (frontDistance < 0.0f) {
+    Serial.println("Decision: STOP - FRONT UNKNOWN");
+  } else if (isFrontBlocked(frontDistance)) {
+    Serial.println("Decision: STOP - FRONT OBSTACLE");
+  } else if (leftDistance < 0.0f || rightDistance < 0.0f) {
+    Serial.println("Decision: HOLD - SIDE UNKNOWN");
+  } else if (leftDistance > rightDistance) {
     Serial.println("Clearer side: LEFT");
   } else if (rightDistance > leftDistance) {
     Serial.println("Clearer side: RIGHT");
-  
   } else {
     Serial.println("Clearer side: EQUAL");
   }
-  delay(1000);
 }
