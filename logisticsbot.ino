@@ -119,6 +119,7 @@ void setup() {
    ============================================================ */
 // Returns a float distance in centimetres.
 // Returns -1.0f when the reading is invalid.
+
 float readDistanceCm(int trigPin, int echoPin) {
   // Send a 10 microsecond trigger pulse
   digitalWrite(trigPin, LOW);
@@ -134,6 +135,8 @@ float readDistanceCm(int trigPin, int echoPin) {
 
   // No valid echo received
   if (duration == 0) {
+    Serial.printf("ECHO GPIO %d | TIMEOUT | duration=%lu us\n",
+                  echoPin, duration);
     return -1.0f;
   }
 
@@ -142,12 +145,16 @@ float readDistanceCm(int trigPin, int echoPin) {
 
   if (distanceCm < SENSOR_MIN_CM ||
       distanceCm > SENSOR_MAX_CM) {
+    Serial.printf("ECHO GPIO %d | OUT_OF_RANGE | duration=%lu us | distance=%.1f cm\n",
+                  echoPin, duration, distanceCm);
     return -1.0f;
   }
 
+  Serial.printf("ECHO GPIO %d | OK | duration=%lu us | distance=%.1f cm\n",
+                echoPin, duration, distanceCm);
+
   return distanceCm;
 }
-
 
 // Returns true when the front reading is blocked
 // or invalid, otherwise returns false.
