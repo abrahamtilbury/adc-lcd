@@ -20,7 +20,7 @@ const unsigned long SENSOR_GAP_MS = 65;          // Wait at least 65 millisecond
 const unsigned long ECHO_TIMEOUT_US = 25000UL;   // Stop waiting for an ECHO after 25,000 microseconds (25 ms)
 const float SENSOR_MIN_CM = 2.0f;        // Minimum accepted measurement: 2 cm
 const float SENSOR_MAX_CM = 400.0f;      // Maximum accepted measurement: 400 cm
-
+const float FRONT_OBSTACLE_CM = 20.0f; 
 
 void stopMotors() {
   digitalWrite(leftMotor_PWM, LOW);
@@ -32,13 +32,11 @@ void stopMotors() {
   digitalWrite(rightMotor_IN4, LOW);
 }
 
-
 volatile bool estopLatched = false;
 
 void ARDUINO_ISR_ATTR onEmergencyStop() {
   estopLatched = true;
 }
-
 
 const int MAP_SIZE = 7;
 int8_t tileMap[MAP_SIZE][MAP_SIZE];
@@ -61,7 +59,6 @@ void printMap() {
     Serial.println();
   }
 }
-
 
 void setup() {
   Serial.begin(115200);
@@ -96,7 +93,6 @@ void setup() {
   );
 }
 
-
 float readDistanceCm(int trigPin, int echoPin) {
   // Send a 10 microsecond trigger pulse
   digitalWrite(trigPin, LOW);
@@ -126,6 +122,10 @@ float readDistanceCm(int trigPin, int echoPin) {
   return distanceCm;
 }
 
+
+bool isFrontBlocked(float distanceCm) {
+  return distanceCm <= FRONT_OBSTACLE_CM;
+}
 
 void readAllDistances(float* front, float* left, float* right) {
   // float* parameters store addresses of float variables.
@@ -164,7 +164,7 @@ void loop() {
   // & supplies the addresses of the three variables.
   // readAllDistances() updates them through its pointer parameters.
   readAllDistances(&frontDistance, &leftDistance, &rightDistance);
-
+  bool frontBlocked = isFrontBlocked(frontDistance);
 
   // Display readings
   Serial.printf(
@@ -178,11 +178,15 @@ void loop() {
   if (frontDistance < 0 ||
       leftDistance < 0 ||
       rightDistance < 0) {
-    Serial.println("Decision: STOP - invalid reading");
+      Serial.println("Decision: STOP - invalid reading");
   } else if (leftDistance > rightDistance) {
     Serial.println("Clearer side: LEFT");
   } else if (rightDistance > leftDistance) {
     Serial.println("Clearer side: RIGHT");
+  } else if (frontBlocked) {
+      Serial.println("Decision: STOP - front obstacle");
+  }
+    
   } else {
     Serial.println("Clearer side: EQUAL");
   }
