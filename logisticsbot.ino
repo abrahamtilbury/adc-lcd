@@ -65,9 +65,6 @@ void printMap() {
 
 void setup() {
   Serial.begin(115200);
-  
-  initialiseMap();
-  printMap();
 
   pinMode(senseRight_PIN_TRIG, OUTPUT);         // senseRight_PIN_TRIG
   pinMode(senseLeft_PIN_TRIG, OUTPUT);         // senseLeft_PIN_TRIG
@@ -83,6 +80,11 @@ void setup() {
   pinMode(leftMotor_PWM, OUTPUT);
   pinMode(rightMotor_PWM, OUTPUT);
   pinMode(ESTOP_PIN, INPUT_PULLUP);
+  
+  stopMotors();     // void function: sets motor outputs LOW, returns nothing.
+  initialiseMap();  // void function: changes the global tileMap array.
+  printMap();       // void function: prints the map to Serial.
+
   if (digitalRead(ESTOP_PIN) == LOW) {
     estopLatched = true;
   }
@@ -92,13 +94,6 @@ void setup() {
       onEmergencyStop,
       FALLING
   );
-
-  digitalWrite(leftMotor_PWM, LOW);
-  digitalWrite(rightMotor_PWM, LOW);
-  digitalWrite(leftMotor_IN1, LOW);
-  digitalWrite(leftMotor_IN2, LOW);
-  digitalWrite(rightMotor_IN3, LOW);
-  digitalWrite(rightMotor_IN4, LOW);
 }
 
 
@@ -131,10 +126,24 @@ float readDistanceCm(int trigPin, int echoPin) {
   return distanceCm;
 }
 
+
+void readAllDistances(float* front, float* left, float* right) {
+  // float* parameters store addresses of float variables.
+  // Dereferencing with * changes the original variables in loop().
+
+  *front = readDistanceCm(senseFront_PIN_TRIG, senseFront_PIN_ECHO);
+  delay(SENSOR_GAP_MS);
+
+  *left = readDistanceCm(senseLeft_PIN_TRIG, senseLeft_PIN_ECHO);
+  delay(SENSOR_GAP_MS);
+
+  *right = readDistanceCm(senseRight_PIN_TRIG, senseRight_PIN_ECHO);
+}
+
+
 void loop() {
   // Keep both motors disabled during testing
-  digitalWrite(leftMotor_PWM, LOW);
-  digitalWrite(rightMotor_PWM, LOW);
+  stopMotors();  // Keep both motors disabled throughout this testing stage.
 
   // Check emergency-stop button
   
@@ -148,18 +157,14 @@ void loop() {
 
 
   // Read sensors one at a time
-  float frontDistance = readDistanceCm(
-      senseFront_PIN_TRIG, senseFront_PIN_ECHO);
+  float frontDistance = -1.0f;
+  float leftDistance = -1.0f;
+  float rightDistance = -1.0f;
 
-  delay(SENSOR_GAP_MS);
+  // & supplies the addresses of the three variables.
+  // readAllDistances() updates them through its pointer parameters.
+  readAllDistances(&frontDistance, &leftDistance, &rightDistance);
 
-  float leftDistance = readDistanceCm(
-      senseLeft_PIN_TRIG, senseLeft_PIN_ECHO);
-
-  delay(SENSOR_GAP_MS);
-
-  float rightDistance = readDistanceCm(
-      senseRight_PIN_TRIG, senseRight_PIN_ECHO);
 
   // Display readings
   Serial.printf(
@@ -170,13 +175,6 @@ void loop() {
   );
 
   // -1 indicates an invalid measurement
-  if (frontDistance < 0 ||
-      leftDistance < 0 ||
-      rightDistance < 0) {
-    Serial.println("WARNING: Invalid sensor reading");
-  }
-
-  
   if (frontDistance < 0 ||
       leftDistance < 0 ||
       rightDistance < 0) {
