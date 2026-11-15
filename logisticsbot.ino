@@ -1,6 +1,14 @@
-// 30127103 Logistics Bot, L298N Driver, 3x HC-SR04 sensors, ESP32
-// 115200 baud in arduino software
-
+// LOGISTICS BOT - ESP32 / L298N / 3x HC-SR04
+// PART 1: STANDALONE AUTONOMOUS ROBOT
+// CURRENT STAGE: STATIONARY SENSOR TESTING
+// SERIAL MONITOR: 115200 BAUD
+// Motors intentionally disabled during testing.
+// Emergency stop uses a software latch;
+// it is not an independently verified hardware stop.
+// Grid map is initialised but not updated by movement.
+/* ============================================================
+   1. CONFIGURATION - PIN ASSIGNMENTS AND SENSOR LIMITS
+   ============================================================ */
 const int senseLeft_PIN_TRIG = 22;
 const int senseLeft_PIN_ECHO = 33;
 const int senseFront_PIN_TRIG  = 23;
@@ -22,6 +30,10 @@ const float SENSOR_MIN_CM = 2.0f;        // Minimum accepted measurement: 2 cm
 const float SENSOR_MAX_CM = 400.0f;      // Maximum accepted measurement: 400 cm
 const float FRONT_OBSTACLE_CM = 20.0f; 
 
+
+/* ============================================================
+   2. MOTOR CONTROL AND EMERGENCY STOP
+   ============================================================ */
 void stopMotors() {
   digitalWrite(leftMotor_PWM, LOW);
   digitalWrite(rightMotor_PWM, LOW);
@@ -38,6 +50,10 @@ void ARDUINO_ISR_ATTR onEmergencyStop() {
   estopLatched = true;
 }
 
+
+/* ============================================================
+   3. GRID MAP - INITIALISATION AND SERIAL DISPLAY
+   ============================================================ */
 const int MAP_SIZE = 7;
 int8_t tileMap[MAP_SIZE][MAP_SIZE];
 
@@ -60,6 +76,10 @@ void printMap() {
   }
 }
 
+
+/* ============================================================
+   4. SETUP - INITIALISE HARDWARE AND SAFETY INPUTS
+   ============================================================ */
 void setup() {
   Serial.begin(115200);
 
@@ -93,6 +113,12 @@ void setup() {
   );
 }
 
+
+/* ============================================================
+   5. ULTRASONIC SENSOR FUNCTIONS
+   ============================================================ */
+// Returns a float distance in centimetres.
+// Returns -1.0f when the reading is invalid.
 float readDistanceCm(int trigPin, int echoPin) {
   // Send a 10 microsecond trigger pulse
   digitalWrite(trigPin, LOW);
@@ -123,10 +149,16 @@ float readDistanceCm(int trigPin, int echoPin) {
 }
 
 
+// Returns true when the front reading is blocked
+// or invalid, otherwise returns false.
 bool isFrontBlocked(float distanceCm) {
   return distanceCm <= FRONT_OBSTACLE_CM;
 }
 
+
+// Pointer parameters allow this function to update
+// three float variables belonging to the caller.
+// The function itself returns no value (void).
 void readAllDistances(float* front, float* left, float* right) {
   // float* parameters store addresses of float variables.
   // Dereferencing with * changes the original variables in loop().
@@ -140,7 +172,9 @@ void readAllDistances(float* front, float* left, float* right) {
   *right = readDistanceCm(senseRight_PIN_TRIG, senseRight_PIN_ECHO);
 }
 
-
+/* ============================================================
+   6. MAIN LOOP - STATIONARY SENSOR TESTING
+   ============================================================ */
 void loop() {
   // Keep both motors disabled during testing
   stopMotors();  // Keep both motors disabled throughout this testing stage.
@@ -184,9 +218,7 @@ void loop() {
   } else if (rightDistance > leftDistance) {
     Serial.println("Clearer side: RIGHT");
   } else if (frontBlocked) {
-      Serial.println("Decision: STOP - front obstacle");
-  }
-    
+      Serial.println("Decision: STOP - front obstacle"); 
   } else {
     Serial.println("Clearer side: EQUAL");
   }
