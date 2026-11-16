@@ -64,6 +64,25 @@ void ARDUINO_ISR_ATTR onEmergencyStop() {
 const int MAP_SIZE = 9;
 int8_t tileMap[MAP_SIZE][MAP_SIZE];
 
+// Navigation configuration
+const int TILE_LENGTH_CM = 20;
+
+// Robot's provisional grid position
+int robotRow = MAP_SIZE - 1;
+int robotCol = 0;
+
+// Map evidence
+// Clearance 0 means no measurement recorded.
+float tileClearanceCm[MAP_SIZE][MAP_SIZE] = {};
+uint8_t tileObstacleSamples[MAP_SIZE][MAP_SIZE] = {};
+
+// Preliminary motor timing calibration
+// Zero means not calibrated.
+unsigned long turnRight90Ms = 0;
+unsigned long turnLeft90Ms = 0;
+unsigned long forward20Ms = 0;
+unsigned long reverse10Ms = 0;
+
 void initialiseMap() {
   for (int row = 0; row < MAP_SIZE; row++) {
     for (int col = 0; col < MAP_SIZE; col++) {
@@ -84,6 +103,329 @@ void printMap() {
   }
 }
 
+/* ============================================================
+   3.1 TILE SELECTION AND MOVEMENT PLANNING
+   ============================================================ */
+
+bool inMap(int row, int col) {
+  return row >= 0 && row < MAP_SIZE &&
+         col >= 0 && col < MAP_SIZE;
+}
+
+// Select an adjacent candidate tile.
+// Priority:
+// 1. Unexplored tile
+// 2. Greatest recorded obstacle clearance
+// 3. Fewest obstacle observations
+// tileMap: -1 unknown, 0 visited, 1 blocked.
+
+bool chooseTile(int& targetRow, int& targetCol) {
+  const int dRow[4] = {-1, 0, 1, 0};
+  const int dCol[4] = {0, 1, 0, -1};
+
+  bool found = false;
+  int bestUnknown = -1;
+  float bestClearance = -1.0f;
+  int bestDataCount = 256;
+
+  for (int d = 0; d < 4; d++) {
+    int row = robotRow + dRow[d];
+    int col = robotCol + dCol[d];
+
+    if (!inMap(row, col) ||
+        tileMap[row][col] == 1) {
+      continue;
+    }
+
+    int unknown =
+        (tileMap[row][col] == -1) ? 1 : 0;
+
+    float clearance = tileClearanceCm[row][col];
+    int dataCount = tileObstacleSamples[row][col];
+
+    if (!found ||
+        unknown > bestUnknown ||
+        (unknown == bestUnknown &&
+         clearance > bestClearance) ||
+        (unknown == bestUnknown &&
+         clearance == bestClearance &&
+         dataCount < bestDataCount)) {
+
+      found = true;
+      bestUnknown = unknown;
+      bestClearance = clearance;
+      bestDataCount = dataCount;
+
+      targetRow = row;
+      targetCol = col;
+    }
+  }
+
+  return found;
+}
+
+// Plan a single 20 cm tile movement.
+// Motor actuation deliberately disabled.
+
+void moveTile() {
+  int targetRow;
+  int targetCol;
+
+  if (estopLatched ||
+      digitalRead(ESTOP_PIN) == LOW) {
+    estopLatched = true;
+    stopMotors();
+    Serial.println("MOVE TILE BLOCKED: E-STOP");
+    return;
+  }
+
+  if (!chooseTile(targetRow, targetCol)) {
+    Serial.println(
+        "MOVE TILE: NO ADJACENT CANDIDATE"
+    );
+    return;
+  }
+
+  Serial.printf(
+      "PLAN ONLY: 20 cm tile (%d,%d) -> (%d,%d)\n",
+      robotRow, robotCol, targetRow, targetCol
+  );
+
+  Serial.println(
+      "No motor command. Path safety unverified."
+  );
+
+  // Do not update the robot's coordinates
+  // until actual movement is confirmed.
+}
+
+/* ============================================================
+   3.2 MOVEMENT CALIBRATION
+   ============================================================ */
+
+// Calculate preliminary durations for 90-degree turns.
+// Supply actual measurements from separate right and
+// left turn tests. Does not operate the motors.
+
+void calibrateAngle(
+    float measuredRightDegrees,
+    unsigned long rightTestMs,
+    float measuredLeftDegrees,
+    unsigned long leftTestMs) {
+
+  if (measuredRightDegrees <= 0 ||
+      measuredLeftDegrees <= 0 ||
+      rightTestMs == 0 ||
+      leftTestMs == 0) {
+
+    Serial.println(
+        "ANGLE CALIBRATION: INVALID MEASUREMENTS"
+    );
+    return;
+  }
+
+  turnRight90Ms = (unsigned long)(
+      90.0f * rightTestMs /
+      measuredRightDegrees + 0.5f
+  );
+
+  turnLeft90Ms = (unsigned long)(
+      90.0f * leftTestMs /
+      measuredLeftDegrees + 0.5f
+  );
+
+  Serial.printf(
+      "INITIAL TURN ESTIMATES: RIGHT=%lu ms LEFT=%lu ms\n",
+      turnRight90Ms, turnLeft90Ms
+  );
+
+  Serial.println(
+      "Verify both turns before enabling movement."
+  );
+}
+
+// Calculate preliminary 20 cm forward and
+// 10 cm reverse travel durations.
+// Supply physically measured test results.
+
+void calibrateDistance(
+    float measuredForwardCm,
+    unsigned long forwardTestMs,
+    float measuredReverseCm,
+    unsigned long reverseTestMs) {
+
+  if (measuredForwardCm <= 0 ||
+      measuredReverseCm <= 0 ||
+      forwardTestMs == 0 ||
+      reverseTestMs == 0) {
+
+    Serial.println(
+        "DISTANCE CALIBRATION: INVALID MEASUREMENTS"
+    );
+    return;
+  }
+
+  forward20Ms = (unsigned long)(
+      20.0f * forwardTestMs /
+      measuredForwardCm + 0.5f
+  );
+
+  reverse10Ms = (unsigned long)(
+      10.0f * reverseTestMs /
+      measuredReverseCm + 0.5f
+  );
+
+  Serial.printf(
+      "INITIAL DISTANCE ESTIMATES: FWD20=%lu ms REV10=%lu ms\n",
+      forward20Ms, reverse10Ms
+  );
+
+  Serial.println(
+      "Verify both distances before enabling movement."
+  );
+}
+
+/* ============================================================
+   3.3 FULL ROTATION SWEEP
+   ============================================================ */
+
+void sweep360() {
+  stopMotors();
+
+  Serial.println("SWEEP 360: PLANNING ONLY");
+
+  Serial.println(
+      "Step 1: Reverse 10 cm after checking rear clearance"
+  );
+
+  Serial.println(
+      "Step 2: Scan at starting heading"
+  );
+
+  Serial.println(
+      "Step 3: Rotate RIGHT 90 degrees and scan"
+  );
+
+  Serial.println(
+      "Step 4: Rotate RIGHT 90 degrees and scan"
+  );
+
+  Serial.println(
+      "Step 5: Rotate RIGHT 90 degrees and scan"
+  );
+
+  Serial.println(
+      "Step 6: Rotate RIGHT 90 degrees to original heading"
+  );
+
+  if (reverse10Ms == 0 ||
+      turnRight90Ms == 0) {
+
+    Serial.println(
+        "SWEEP NOT READY: Missing calibration"
+    );
+    return;
+  }
+
+  Serial.println(
+      "Calibration estimates available."
+  );
+
+  Serial.println(
+      "Motor execution and map updates not implemented."
+  );
+}
+
+/* ============================================================
+   3.4 SNAKE COVERAGE PATTERN
+   ============================================================ */
+
+// Generate row-by-row coverage order.
+// Begin at bottom-left.
+// Alternate travel direction on each row.
+// Planning only; obstacles are not yet routed around.
+
+void snake() {
+  Serial.println(
+      "SNAKE COVERAGE ORDER:"
+  );
+
+  for (int row = MAP_SIZE - 1; row >= 0; row--) {
+
+    bool leftToRight =
+        ((MAP_SIZE - 1 - row) % 2 == 0);
+
+    for (int i = 0; i < MAP_SIZE; i++) {
+
+      int col = leftToRight ?
+          i : MAP_SIZE - 1 - i;
+
+      Serial.printf(
+          "(%d,%d) ", row, col
+      );
+    }
+
+    Serial.println();
+  }
+}
+
+/* ============================================================
+   3.5 CENTRE SPIRAL COVERAGE
+   ============================================================ */
+
+// Generate outward spiral tile order.
+// Assumes the robot begins at the centre.
+// Planning only; does not execute movement.
+
+void centreSpiral() {
+  Serial.println(
+      "CENTRE SPIRAL COVERAGE ORDER:"
+  );
+
+  int row = MAP_SIZE / 2;
+  int col = MAP_SIZE / 2;
+
+  Serial.printf("(%d,%d) ", row, col);
+
+  const int dRow[4] = {0, 1, 0, -1};
+  const int dCol[4] = {1, 0, -1, 0};
+
+  int stepLength = 1;
+  int printed = 1;
+
+  for (int leg = 0;
+       printed < MAP_SIZE * MAP_SIZE;
+       leg++) {
+
+    int direction = leg % 4;
+
+    for (int step = 0;
+         step < stepLength;
+         step++) {
+
+      row += dRow[direction];
+      col += dCol[direction];
+
+      if (inMap(row, col)) {
+        Serial.printf(
+            "(%d,%d) ", row, col
+        );
+
+        printed++;
+
+        if (printed == MAP_SIZE * MAP_SIZE) {
+          break;
+        }
+      }
+    }
+
+    if (leg % 2 == 1) {
+      stepLength++;
+    }
+  }
+
+  Serial.println();
+}
 
 /* ============================================================
    4. SETUP - INITIALISE HARDWARE AND SAFETY INPUTS
@@ -116,11 +458,19 @@ void setup() {
     estopLatched = true;
   }
   
-  attachInterrupt(
+    attachInterrupt(
       digitalPinToInterrupt(ESTOP_PIN),
       onEmergencyStop,
       FALLING
   );
+
+  // Navigation dry-run test
+  moveTile();
+
+  // Enable one at a time for route printing:
+  // snake();
+  // centreSpiral();
+  // sweep360();
 }
 
 
