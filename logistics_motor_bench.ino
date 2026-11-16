@@ -1,8 +1,8 @@
 // LOGISTICS BOT - ESP32 / L298N / 3x HC-SR04
 // PART 1: STANDALONE AUTONOMOUS ROBOT
-// CURRENT STAGE: STATIONARY SENSOR TESTING
+// CURRENT STAGE: MOTOR DRIVER BENCH TESTING
 // SERIAL MONITOR: 115200 BAUD
-// Motors intentionally disabled during testing.
+// Motors run only after an explicit Serial command.
 // Emergency stop uses a software latch;
 // it is not an independently verified hardware stop.
 // Grid map is initialised but not updated by movement.
@@ -41,15 +41,135 @@ const unsigned long SENSOR_REPORT_MS = 1000UL;
 /* ============================================================
    2. MOTOR CONTROL AND EMERGENCY STOP
    ============================================================ */
-void stopMotors() {
-  digitalWrite(leftMotor_PWM, LOW);
-  digitalWrite(rightMotor_PWM, LOW);
+
+volatile bool estopLatched = false;
+
+bool leftPwmAttached = false;
+bool rightPwmAttached = false;
+
+const uint8_t MOTOR_PWM_DUTY = 180;
+const unsigned long MOTOR_TEST_MS = 500UL;
+
+// Disable LEFT bridge before changing direction.
+void disableLeftMotor() {
+  if (leftPwmAttached) {
+    ledcWrite(leftMotor_PWM, 0);
+  } else {
+    digitalWrite(leftMotor_PWM, LOW);
+  }
 
   digitalWrite(leftMotor_IN1, LOW);
   digitalWrite(leftMotor_IN2, LOW);
+}
+
+// Disable RIGHT bridge before changing direction.
+void disableRightMotor() {
+  if (rightPwmAttached) {
+    ledcWrite(rightMotor_PWM, 0);
+  } else {
+    digitalWrite(rightMotor_PWM, LOW);
+  }
+
   digitalWrite(rightMotor_IN3, LOW);
   digitalWrite(rightMotor_IN4, LOW);
 }
+
+void stopMotors() {
+  disableLeftMotor();
+  disableRightMotor();
+}
+
+// An activated E-stop stays latched until reboot.
+bool emergencyStopActive() {
+  if (estopLatched ||
+      digitalRead(ESTOP_PIN) == LOW) {
+    estopLatched = true;
+    return true;
+  }
+
+  return false;
+}
+
+void ARDUINO_ISR_ATTR onEmergencyStop() {
+  estopLatched = true;
+}
+
+// Direction: 1 = forward, -1 = reverse, 0 = stop.
+// Invalid directions also stop this motor.
+void setLeftMotor(int direction) {
+  disableLeftMotor();
+
+  if (direction != 1 && direction != -1) {
+    return;
+  }
+
+  if (emergencyStopActive()) {
+    return;
+  }
+
+  digitalWrite(
+    leftMotor_IN1,
+    direction == 1 ? HIGH : LOW
+  );
+
+  digitalWrite(
+    leftMotor_IN2,
+    direction == -1 ? HIGH : LOW
+  );
+
+  // Recheck immediately before enabling.
+  if (emergencyStopActive()) {
+    disableLeftMotor();
+    return;
+  }
+
+  if (leftPwmAttached) {
+    if (!ledcWrite(leftMotor_PWM, MOTOR_PWM_DUTY)) {
+      estopLatched = true;
+      disableLeftMotor();
+    }
+  } else {
+    digitalWrite(leftMotor_PWM, HIGH);
+  }
+}
+
+void setRightMotor(int direction) {
+  disableRightMotor();
+
+  if (direction != 1 && direction != -1) {
+    return;
+  }
+
+  if (emergencyStopActive()) {
+    return;
+  }
+
+  digitalWrite(
+    rightMotor_IN3,
+    direction == 1 ? HIGH : LOW
+  );
+
+  digitalWrite(
+    rightMotor_IN4,
+    direction == -1 ? HIGH : LOW
+  );
+
+  // Recheck immediately before enabling.
+  if (emergencyStopActive()) {
+    disableRightMotor();
+    return;
+  }
+
+  if (rightPwmAttached) {
+    if (!ledcWrite(rightMotor_PWM, MOTOR_PWM_DUTY)) {
+      estopLatched = true;
+      disableRightMotor();
+    }
+  } else {
+    digitalWrite(rightMotor_PWM, HIGH);
+  }
+}
+
 
 volatile bool estopLatched = false;
 
@@ -448,21 +568,83 @@ void setup() {
   pinMode(rightMotor_PWM, OUTPUT);
   pinMode(ESTOP_PIN, INPUT_PULLUP);
   
-  stopMotors();     // void function: sets motor outputs LOW, returns nothing.
-   Serial.println("LOGISTICS BOT - STATIONARY SENSOR TEST");
-   Serial.println("Motor outputs disabled; E-stop is software-latched.");
-  initialiseMap();  // void function: changes the global tileMap array.
-  printMap();       // void function: prints the map to Serial.
+  
+  stopMotors();
 
+  // Capture an E-stop already held at startup.
   if (digitalRead(ESTOP_PIN) == LOW) {
     estopLatched = true;
   }
-  
-    attachInterrupt(
-      digitalPinToInterrupt(ESTOP_PIN),
-      onEmergencyStop,
-      FALLING
+
+  attachInterrupt(
+    digitalPinToInterrupt(ESTOP_PIN),
+    onEmergencyStop,
+    FALLING
   );
+
+   
+  // Independent LEDC PWM setup.
+  // Arduino-ESP32 3.x API.
+  const uint32_t PWM_FREQUENCY_HZ = 1000;
+  const uint8_t PWM_RESOLUTION_BITS = 8;
+
+  leftPwmAttached = ledcAttach(
+    leftMotor_PWM,
+    PWM_FREQUENCY_HZ,
+    PWM_RESOLUTION_BITS
+  );
+
+  rightPwmAttached = ledcAttach(
+    rightMotor_PWM,
+    PWM_FREQUENCY_HZ,
+    PWM_RESOLUTION_BITS
+  );
+
+  // Start at zero duty on both channels.
+  bool leftZeroOk =
+      leftPwmAttached &&
+      ledcWrite(leftMotor_PWM, 0);
+
+  bool rightZeroOk =
+      rightPwmAttached &&
+      ledcWrite(rightMotor_PWM, 0);
+
+  Serial.printf(
+    "LEFT PWM: %s\n",
+    leftZeroOk ? "OK" : "FAILED"
+  );
+
+  Serial.printf(
+    "RIGHT PWM: %s\n",
+    rightZeroOk ? "OK" : "FAILED"
+  );
+
+  // Lock out motor tests if either output fails.
+  if (!leftZeroOk || !rightZeroOk) {
+    estopLatched = true;
+    stopMotors();
+
+    Serial.println(
+      "PWM INITIALISATION FAILED - TEST LOCKED OUT"
+    );
+  }
+
+   
+  initialiseMap();
+  printMap();
+
+  Serial.println("LOGISTICS BOT - MOTOR BENCH TEST");
+  Serial.println("Software E-stop latch enabled.");
+  Serial.println("Wheels must be raised.");
+
+  Serial.println("COMMANDS:");
+  Serial.println("1 = LEFT forward");
+  Serial.println("2 = LEFT reverse");
+  Serial.println("3 = RIGHT forward");
+  Serial.println("4 = RIGHT reverse");
+  Serial.println("0 = STOP");
+}
+
 
   // Navigation dry-run test
   moveTile();
@@ -618,77 +800,103 @@ void readAllDistances(float* front, float* left, float* right,
   );
 }
 
+
 /* ============================================================
-   6. MAIN LOOP - STATIONARY SENSOR TESTING
+   6. MAIN LOOP - GUARDED MOTOR BENCH TEST
    ============================================================ */
+
 void loop() {
-  stopMotors();  // Stationary testing only.
+  static bool testRunning = false;
+  static unsigned long testStartedMs = 0;
+  static bool estopReported = false;
 
-  // 6.1 Physical E-stop input and software latch
-  if (estopLatched || digitalRead(ESTOP_PIN) == LOW) {
-    estopLatched = true;
-    static bool reported = false;
-    if (!reported) {
-      Serial.println("E-STOP LATCHED");
-      reported = true;
+  // 6.1 Highest-priority software safety check.
+  if (emergencyStopActive()) {
+    stopMotors();
+    testRunning = false;
+
+    if (!estopReported) {
+      Serial.println("E-STOP LATCHED - MOTORS DISABLED");
+      estopReported = true;
     }
+
+    while (Serial.available() > 0) {
+      Serial.read();
+    }
+
     return;
   }
 
-  // 6.2 Minimum start-to-start scan interval.
-  // 15 measurements across three ultrasonic sensors.
-  // 14 gaps x 65 ms = 910 ms of intentional delays.
-  // 15 echo timeouts x 25 ms = up to 375 ms more.
-  // Total may reach approximately 1285 ms plus overhead.
-  // If a scan exceeds 1000 ms, the next scan may start
-  // almost immediately after the previous scan finishes.
-  // This is NOT a guaranteed 1 Hz reporting rate.
+  // 6.2 Non-blocking automatic timeout.
+  if (testRunning &&
+      millis() - testStartedMs >= MOTOR_TEST_MS) {
+    stopMotors();
+    testRunning = false;
 
-  static unsigned long lastReportMs = 0;
-  if (millis() - lastReportMs < SENSOR_REPORT_MS) return;
-  lastReportMs = millis();
+    Serial.println("AUTO STOP - 500 ms elapsed");
+  }
 
-  float frontDistance = -1.0f;
-  float leftDistance = -1.0f;
-  float rightDistance = -1.0f;
-  bool frontCloseSample = false;
-
-  readAllDistances(
-      &frontDistance,
-      &leftDistance,
-      &rightDistance,
-      &frontCloseSample
-  );
-
-  if (estopLatched || digitalRead(ESTOP_PIN) == LOW) {
-    estopLatched = true;
+  // 6.3 Wait for an explicit Serial command.
+  if (Serial.available() == 0) {
     return;
   }
 
-   Serial.printf(
-      "Front: %.1f cm | Left: %.1f cm | Right: %.1f cm\n",
-      frontDistance, leftDistance, rightDistance
-  );
+  char command = (char)Serial.read();
 
-  if (frontDistance >= 0.0f) {
-    Serial.printf(
-        "Front close-sample warning: %s\n",
-        frontCloseSample ? "YES" : "NO"
-    );
+  // Ignore Serial Monitor line endings.
+  if (command == '\n' || command == '\r') {
+    return;
   }
 
-  // 6.3 Distinguish obstruction from unknown measurements.
-  if (frontDistance < 0.0f) {
-    Serial.println("Decision: STOP - FRONT UNKNOWN");
-  } else if (frontCloseSample || isFrontBlocked(frontDistance)) {
-    Serial.println("Decision: STOP - FRONT OBSTACLE");
-  } else if (leftDistance < 0.0f || rightDistance < 0.0f) {
-    Serial.println("Decision: HOLD - SIDE UNKNOWN");
-  } else if (leftDistance > rightDistance) {
-    Serial.println("Clearer side: LEFT");
-  } else if (rightDistance > leftDistance) {
-    Serial.println("Clearer side: RIGHT");
-  } else {
-    Serial.println("Clearer side: EQUAL");
+  // Manual stop is always accepted.
+  if (command == '0') {
+    stopMotors();
+    testRunning = false;
+    Serial.println("MANUAL STOP");
+    return;
   }
+
+  // Do not restart or extend a running test.
+  if (testRunning) {
+    Serial.println("BUSY - WAIT FOR AUTO STOP");
+    return;
+  }
+
+  stopMotors();
+
+  // 6.4 Select exactly one motor and direction.
+  switch (command) {
+    case '1':
+      setLeftMotor(1);
+      break;
+
+    case '2':
+      setLeftMotor(-1);
+      break;
+
+    case '3':
+      setRightMotor(1);
+      break;
+
+    case '4':
+      setRightMotor(-1);
+      break;
+
+    default:
+      Serial.println("INVALID COMMAND: USE 0-4");
+      return;
+  }
+
+  // Check again after the motor function.
+  if (emergencyStopActive()) {
+    stopMotors();
+    testRunning = false;
+    return;
+  }
+
+  testStartedMs = millis();
+  testRunning = true;
+
+  Serial.println("MOTOR TEST STARTED - MAX 500 ms");
 }
+
