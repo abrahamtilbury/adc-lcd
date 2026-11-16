@@ -540,6 +540,23 @@ void setup() {
     Serial.println("E-STOP ACTIVE: commands locked until reset.");
     return;
   }
+ 
+  // Stage B only: ESP32 Arduino core v3.x LEDC API.
+  const bool leftPwmReady = ledcAttach(leftMotor_PWM, 2000, 8);
+  const bool rightPwmReady = ledcAttach(rightMotor_PWM, 2000, 8);
+  if (!leftPwmReady || !rightPwmReady) {
+    if (leftPwmReady) ledcDetach(leftMotor_PWM);
+    if (rightPwmReady) ledcDetach(rightMotor_PWM);
+    estopLatched = true;  // Fail closed; reset required.
+    stopMotors();
+    Serial.println("PWM INIT FAILED: TEST LOCKED");
+    return;
+  }
+  pwmModeEnabled = true;
+  stopMotors();
+  Serial.println("PWM enabled: 2000 Hz / 8-bit / 192 duty");
+
+
   Serial.println("L=left forward, l=left reverse");
   Serial.println("R=right forward, r=right reverse, X=stop");
   Serial.println("Each motor command runs for at most 500 ms.");
