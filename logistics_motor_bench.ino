@@ -1,6 +1,9 @@
+#include <WiFi.h>
+
+const char* ssid = "Abe's iPhone";
+const char* password = "nintendo";
 // LOGISTICS BOT - ESP32 / L298N / 3x HC-SR04
- // SERIAL MONITOR: 115200 BAUD
- // Motors run only during 500 ms Serial-commanded bench tests.
+ // SERIAL: 115200 BAUD
 // Emergency stop uses a software latch;
 // Grid map is initialised but not updated by movement.
 /* ============================================================
@@ -472,7 +475,12 @@ void centreSpiral() {
    ============================================================ */
 void setup() {
   Serial.begin(115200);
-
+  WiFi.begin(ssid, password);
+ while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected to WiFi!");
   pinMode(senseRight_PIN_TRIG, OUTPUT);  
   pinMode(senseLeft_PIN_TRIG, OUTPUT);      
   pinMode(senseFront_PIN_TRIG, OUTPUT);     
