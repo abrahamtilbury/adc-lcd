@@ -70,35 +70,65 @@ void stopMotors() {
   stopRightMotor();
 }
 
-motorFaultLatched = true
-stopMotors();
-std:cout >> Motor Locked, Reset Required; 
+
+void latchMotorFault() {
+  motorFaultLatched = true;
+  stopMotors();
+  Serial.println("MOTOR FAULT: BOTH MOTORS OFF; RESET REQUIRED");
+}
 
 // direction: +1 forward, -1 reverse, 0 stop.
+
 void setLeftMotor(int direction) {
   stopLeftMotor();
+
+  if (motorFaultLatched) { stopMotors(); return; }
   if (direction != 1 && direction != -1) return;
   if (emergencyStopActive()) { stopMotors(); return; }
 
   digitalWrite(leftMotor_IN1, direction == 1 ? HIGH : LOW);
   digitalWrite(leftMotor_IN2, direction == -1 ? HIGH : LOW);
 
-  if (emergencyStopActive()) { stopMotors(); return; }
-  if (pwmModeEnabled) ledcWrite(leftMotor_PWM, MOTOR_TEST_DUTY);
-  else digitalWrite(leftMotor_PWM, HIGH);
-}
+  if (emergencyStopActive() || motorFaultLatched) {
+    stopMotors();
+    return;
+  }
 
+  if (pwmModeEnabled) {
+    if (!ledcWrite(leftMotor_PWM, MOTOR_TEST_DUTY)) {
+      latchMotorFault();
+      return;
+    }
+  } else {
+    digitalWrite(leftMotor_PWM, HIGH);
+  }
+}
+  
 void setRightMotor(int direction) {
   stopRightMotor();
+
+  if (motorFaultLatched) { stopMotors(); return; }
   if (direction != 1 && direction != -1) return;
   if (emergencyStopActive()) { stopMotors(); return; }
 
   digitalWrite(rightMotor_IN3, direction == 1 ? HIGH : LOW);
   digitalWrite(rightMotor_IN4, direction == -1 ? HIGH : LOW);
 
-  if (emergencyStopActive()) { stopMotors(); return; }
-  if (pwmModeEnabled) ledcWrite(rightMotor_PWM, MOTOR_TEST_DUTY);
-  else digitalWrite(rightMotor_PWM, HIGH);
+  if (emergencyStopActive() || motorFaultLatched) {
+    stopMotors();
+    return;
+  }
+
+  if (pwmModeEnabled) {
+    if (!ledcWrite(rightMotor_PWM, MOTOR_TEST_DUTY)) {
+      latchMotorFault();
+      return;
+    }
+  } else {
+    digitalWrite(rightMotor_PWM, HIGH);
+  }
+}
+
 }
 
 /* ============================================================
@@ -691,6 +721,14 @@ void loop() {
   static bool testRunning = false;
   static bool estopReported = false;
 
+   
+if (motorFaultLatched) {
+  stopMotors();
+  testRunning = false;
+  while (Serial.available() > 0) Serial.read();
+  return;
+}
+   
   if (emergencyStopActive()) {
     stopMotors();
     testRunning = false;
@@ -731,11 +769,31 @@ void loop() {
   }
 
   stopMotors();
-  switch (command) {
-    case 'L': setLeftMotor(1);  Serial.println("LEFT FORWARD");  break;
-    case 'l': setLeftMotor(-1); Serial.println("LEFT REVERSE");  break;
-    case 'R': setRightMotor(1); Serial.println("RIGHT FORWARD"); break;
-    case 'r': setRightMotor(-1);Serial.println("RIGHT REVERSE"); break;
+  switch (command) { 
+   case 'L':
+     setLeftMotor(1);
+     if (motorFaultLatched) return;
+     Serial.println("LEFT FORWARD");
+     break;
+   
+   case 'l':
+     setLeftMotor(-1);
+     if (motorFaultLatched) return;
+     Serial.println("LEFT REVERSE");
+     break;
+   
+   case 'R':
+     setRightMotor(1);
+     if (motorFaultLatched) return;
+     Serial.println("RIGHT FORWARD");
+     break;
+   
+   case 'r':
+     setRightMotor(-1);
+     if (motorFaultLatched) return;
+     Serial.println("RIGHT REVERSE");
+     break;
+
     default:
       Serial.println("UNKNOWN: use L, l, R, r or X");
       return;
