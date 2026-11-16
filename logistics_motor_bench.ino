@@ -1,14 +1,10 @@
-#include <WiFi.h>
-
-const char* ssid = "Abe's iPhone";
-const char* password = "nintendo";
 // LOGISTICS BOT - ESP32 / L298N / 3x HC-SR04
- // SERIAL: 115200 BAUD
-// Emergency stop uses a software latch;
-// Grid map is initialised but not updated by movement.
+// SERIAL: 115200 BAUD
+// Software Estop
 /* ============================================================
-   1. CONFIGURATION - PIN ASSIGNMENTS AND SENSOR LIMITS
+   1. CONFIGURATION - PIN ASSIGNMENTS / SENSOR LIMITS
    ============================================================ */
+
 const int senseLeft_PIN_TRIG = 22;
 const int senseLeft_PIN_ECHO = 33;
 const int senseFront_PIN_TRIG  = 23;
@@ -42,6 +38,7 @@ const unsigned long SENSOR_REPORT_MS = 1000UL;
    2. MOTOR CONTROL AND EMERGENCY STOP
    ============================================================ */
 volatile bool estopLatched = false;
+bool motorFaultLatched = false;
 bool pwmModeEnabled = false;
 const uint8_t MOTOR_TEST_DUTY = 192; // PWM only: 192/255 (8-bit)
 
@@ -73,6 +70,9 @@ void stopMotors() {
   stopRightMotor();
 }
 
+motorFaultLatched = true
+stopMotors();
+std:cout >> Motor Locked, Reset Required; 
 
 // direction: +1 forward, -1 reverse, 0 stop.
 void setLeftMotor(int direction) {
