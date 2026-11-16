@@ -33,6 +33,9 @@ const float FRONT_OBSTACLE_CM = 20.0f;
 // Provisional obstacle-detection threshold, not a verified stopping distance.
 // Reassess after measuring motor stopping performance.
 
+// Minimum 1000 ms between scan starts.
+// Not a guaranteed one-second reporting rate.
+// Blocking sensor measurements can exceed this interval.
 const unsigned long SENSOR_REPORT_MS = 1000UL;
 
 /* ============================================================
@@ -68,9 +71,8 @@ void initialiseMap() {
     }
   }
 
-   tileMap[MAP_SIZE / 2][MAP_SIZE / 2] = 0;
-   // Integer division locates the centre of an odd-sized square map.
-
+  // Starting / sweep tile: bottom-left
+  tileMap[MAP_SIZE - 1][0] = 0;
 }
 
 void printMap() {
@@ -170,50 +172,100 @@ bool isFrontBlocked(float distanceCm) {
   return distanceCm >= 0.0f && distanceCm <= FRONT_OBSTACLE_CM;
 }
 
-// Three-sample median; two valid samples use the nearer value.
-float readFilteredDistanceCm(int trigPin, int echoPin) {
-  float samples[3];
+// Five samples per sensor; at least three must be valid.
+// Report the median of valid samples.
+// With four valid samples, use the lower-middle value.
+// Conservative safety override: a nearest valid sample
+// <= 20 cm triggers a separate close-obstacle warning.
+// The warning does not alter the reported median.
+
+float readFilteredDistanceCm(int trigPin, int echoPin,
+                             bool* closeSampleDetected = nullptr) {
+  if (closeSampleDetected != nullptr) {
+    *closeSampleDetected = false;
+  }
+  const int SAMPLE_COUNT = 5;
+  const int MIN_VALID = 3;
+
+  float validSamples[SAMPLE_COUNT];
   int validCount = 0;
 
-  for (int i = 0; i < 3; i++) {
+  for (int i = 0; i < SAMPLE_COUNT; i++) {
     if (estopLatched || digitalRead(ESTOP_PIN) == LOW) {
       estopLatched = true;
       return -1.0f;
     }
 
     float cm = readDistanceCm(trigPin, echoPin);
-    if (cm >= 0.0f) samples[validCount++] = cm;
-    if (i < 2) delay(SENSOR_GAP_MS);
+
+    if (cm >= 0.0f) {
+      validSamples[validCount] = cm;
+      validCount++;
+    }
+
+    if (i < SAMPLE_COUNT - 1) {
+      delay(SENSOR_GAP_MS);
+    }
   }
 
-  if (validCount < 2) return -1.0f;
-  if (validCount == 2) {
-    return samples[0] < samples[1] ? samples[0] : samples[1];
+  Serial.printf(
+    "ECHO GPIO %d | QUALITY: %d/5 (%d%%)\n",
+    echoPin, validCount, validCount * 20
+  );
+
+  if (validCount < MIN_VALID) {
+    return -1.0f;
   }
 
-  for (int i = 0; i < 2; i++) {
-    for (int j = i + 1; j < 3; j++) {
-      if (samples[i] > samples[j]) {
-        float temp = samples[i];
-        samples[i] = samples[j];
-        samples[j] = temp;
+  // Sort only the valid measurements.
+  for (int i = 0; i < validCount - 1; i++) {
+    for (int j = i + 1; j < validCount; j++) {
+      if (validSamples[i] > validSamples[j]) {
+        float temp = validSamples[i];
+        validSamples[i] = validSamples[j];
+        validSamples[j] = temp;
       }
     }
   }
-  return samples[1];
-}
+
+  // Conservative close-obstacle warning.
+  // The nearest valid sample determines the warning,
+  // without changing the reported median.
+  if (closeSampleDetected != nullptr) {
+    *closeSampleDetected =
+        (validSamples[0] <= FRONT_OBSTACLE_CM);
+  }
+
+  // Always return the median valid distance.
+  return validSamples[(validCount - 1) / 2];
+
 
 // Update the caller's front, left and right distances.
-void readAllDistances(float* front, float* left, float* right) {
-  *front = readFilteredDistanceCm(senseFront_PIN_TRIG, senseFront_PIN_ECHO);
+// Separately report whether a front sample was too close.
+void readAllDistances(float* front, float* left, float* right,
+                      bool* frontCloseSample) {
+
+  *front = readFilteredDistanceCm(
+      senseFront_PIN_TRIG,
+      senseFront_PIN_ECHO,
+      frontCloseSample
+  );
+
   if (estopLatched) return;
   delay(SENSOR_GAP_MS);
 
-  *left = readFilteredDistanceCm(senseLeft_PIN_TRIG, senseLeft_PIN_ECHO);
+  *left = readFilteredDistanceCm(
+      senseLeft_PIN_TRIG,
+      senseLeft_PIN_ECHO
+  );
+
   if (estopLatched) return;
   delay(SENSOR_GAP_MS);
 
-  *right = readFilteredDistanceCm(senseRight_PIN_TRIG, senseRight_PIN_ECHO);
+  *right = readFilteredDistanceCm(
+      senseRight_PIN_TRIG,
+      senseRight_PIN_ECHO
+  );
 }
 
 /* ============================================================
@@ -233,7 +285,15 @@ void loop() {
     return;
   }
 
-  // 6.2 Schedule reports; ultrasonic reads are still blocking.
+  // 6.2 Minimum start-to-start scan interval.
+  // 15 measurements across three ultrasonic sensors.
+  // 14 gaps x 65 ms = 910 ms of intentional delays.
+  // 15 echo timeouts x 25 ms = up to 375 ms more.
+  // Total may reach approximately 1285 ms plus overhead.
+  // If a scan exceeds 1000 ms, the next scan may start
+  // almost immediately after the previous scan finishes.
+  // This is NOT a guaranteed 1 Hz reporting rate.
+
   static unsigned long lastReportMs = 0;
   if (millis() - lastReportMs < SENSOR_REPORT_MS) return;
   lastReportMs = millis();
@@ -241,8 +301,14 @@ void loop() {
   float frontDistance = -1.0f;
   float leftDistance = -1.0f;
   float rightDistance = -1.0f;
+  bool frontCloseSample = false;
 
-  readAllDistances(&frontDistance, &leftDistance, &rightDistance);
+  readAllDistances(
+      &frontDistance,
+      &leftDistance,
+      &rightDistance,
+      &frontCloseSample
+  );
 
   if (estopLatched || digitalRead(ESTOP_PIN) == LOW) {
     estopLatched = true;
@@ -250,12 +316,18 @@ void loop() {
   }
 
   Serial.printf("Front: %.1f cm | Left: %.1f cm | Right: %.1f cm\n",
+       if (frontDistance >= 0.0f) {
+          Serial.printf(
+              "Front close-sample warning: %s\n",
+              frontCloseSample ? "YES" : "NO"
+          );
+        }
                 frontDistance, leftDistance, rightDistance);
 
   // 6.3 Distinguish obstruction from unknown measurements.
   if (frontDistance < 0.0f) {
     Serial.println("Decision: STOP - FRONT UNKNOWN");
-  } else if (isFrontBlocked(frontDistance)) {
+  } else if (frontCloseSample || isFrontBlocked(frontDistance)) {
     Serial.println("Decision: STOP - FRONT OBSTACLE");
   } else if (leftDistance < 0.0f || rightDistance < 0.0f) {
     Serial.println("Decision: HOLD - SIDE UNKNOWN");
