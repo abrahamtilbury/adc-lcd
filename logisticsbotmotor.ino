@@ -166,8 +166,8 @@ float readDistanceCm(int trigPin, int echoPin) {
   return distanceCm;
 }
 
-
- // Only a valid front reading can confirm an obstruction.
+// The filtered front distance can indicate an obstacle.
+// A separate close-sample flag preserves conservative detection.
 bool isFrontBlocked(float distanceCm) {
   return distanceCm >= 0.0f && distanceCm <= FRONT_OBSTACLE_CM;
 }
@@ -238,7 +238,7 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
 
   // Always return the median valid distance.
   return validSamples[(validCount - 1) / 2];
-
+}
 
 // Update the caller's front, left and right distances.
 // Separately report whether a front sample was too close.
@@ -315,14 +315,17 @@ void loop() {
     return;
   }
 
-  Serial.printf("Front: %.1f cm | Left: %.1f cm | Right: %.1f cm\n",
-       if (frontDistance >= 0.0f) {
-          Serial.printf(
-              "Front close-sample warning: %s\n",
-              frontCloseSample ? "YES" : "NO"
-          );
-        }
-                frontDistance, leftDistance, rightDistance);
+   Serial.printf(
+      "Front: %.1f cm | Left: %.1f cm | Right: %.1f cm\n",
+      frontDistance, leftDistance, rightDistance
+  );
+
+  if (frontDistance >= 0.0f) {
+    Serial.printf(
+        "Front close-sample warning: %s\n",
+        frontCloseSample ? "YES" : "NO"
+    );
+  }
 
   // 6.3 Distinguish obstruction from unknown measurements.
   if (frontDistance < 0.0f) {
