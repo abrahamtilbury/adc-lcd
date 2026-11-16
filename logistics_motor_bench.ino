@@ -1,8 +1,8 @@
 // LOGISTICS BOT - ESP32 / L298N / 3x HC-SR04
 // PART 1: STANDALONE AUTONOMOUS ROBOT
-// CURRENT STAGE: MOTOR DRIVER BENCH TESTING
-// SERIAL MONITOR: 115200 BAUD
-// Motors run only after an explicit Serial command.
+ // CURRENT STAGE: MOTOR DRIVER BENCH TESTING
+ // SERIAL MONITOR: 115200 BAUD
+ // Motors run only during 500 ms Serial-commanded bench tests.
 // Emergency stop uses a software latch;
 // it is not an independently verified hardware stop.
 // Grid map is initialised but not updated by movement.
@@ -41,7 +41,6 @@ const unsigned long SENSOR_REPORT_MS = 1000UL;
 /* ============================================================
    2. MOTOR CONTROL AND EMERGENCY STOP
    ============================================================ */
-
 volatile bool estopLatched = false;
 
 bool leftPwmAttached = false;
@@ -74,109 +73,66 @@ void disableRightMotor() {
   digitalWrite(rightMotor_IN4, LOW);
 }
 
-void stopMotors() {
-  disableLeftMotor();
-  disableRightMotor();
-}
 
-// An activated E-stop stays latched until reboot.
-bool emergencyStopActive() {
-  if (estopLatched ||
-      digitalRead(ESTOP_PIN) == LOW) {
-    estopLatched = true;
-    return true;
-  }
-
-  return false;
-}
+volatile bool estopLatched = false;
+bool pwmModeEnabled = false;
+const uint8_t MOTOR_TEST_DUTY = 192; // PWM only: 192/255 (8-bit)
 
 void ARDUINO_ISR_ATTR onEmergencyStop() {
   estopLatched = true;
 }
 
-// Direction: 1 = forward, -1 = reverse, 0 = stop.
-// Invalid directions also stop this motor.
+bool emergencyStopActive() {
+  if (digitalRead(ESTOP_PIN) == LOW) estopLatched = true;
+  return estopLatched;
+}
+
+void stopLeftMotor() {
+  if (pwmModeEnabled) ledcWrite(leftMotor_PWM, 0);
+  else digitalWrite(leftMotor_PWM, LOW);
+  digitalWrite(leftMotor_IN1, LOW);
+  digitalWrite(leftMotor_IN2, LOW);
+}
+
+void stopRightMotor() {
+  if (pwmModeEnabled) ledcWrite(rightMotor_PWM, 0);
+  else digitalWrite(rightMotor_PWM, LOW);
+  digitalWrite(rightMotor_IN3, LOW);
+  digitalWrite(rightMotor_IN4, LOW);
+}
+
+void stopMotors() {
+  stopLeftMotor();
+  stopRightMotor();
+}
+
+
+// direction: +1 forward, -1 reverse, 0 stop.
 void setLeftMotor(int direction) {
-  disableLeftMotor();
+  stopLeftMotor();
+  if (direction != 1 && direction != -1) return;
+  if (emergencyStopActive()) { stopMotors(); return; }
 
-  if (direction != 1 && direction != -1) {
-    return;
-  }
+  digitalWrite(leftMotor_IN1, direction == 1 ? HIGH : LOW);
+  digitalWrite(leftMotor_IN2, direction == -1 ? HIGH : LOW);
 
-  if (emergencyStopActive()) {
-    return;
-  }
-
-  digitalWrite(
-    leftMotor_IN1,
-    direction == 1 ? HIGH : LOW
-  );
-
-  digitalWrite(
-    leftMotor_IN2,
-    direction == -1 ? HIGH : LOW
-  );
-
-  // Recheck immediately before enabling.
-  if (emergencyStopActive()) {
-    disableLeftMotor();
-    return;
-  }
-
-  if (leftPwmAttached) {
-    if (!ledcWrite(leftMotor_PWM, MOTOR_PWM_DUTY)) {
-      estopLatched = true;
-      disableLeftMotor();
-    }
-  } else {
-    digitalWrite(leftMotor_PWM, HIGH);
-  }
+  if (emergencyStopActive()) { stopMotors(); return; }
+  if (pwmModeEnabled) ledcWrite(leftMotor_PWM, MOTOR_TEST_DUTY);
+  else digitalWrite(leftMotor_PWM, HIGH);
 }
 
 void setRightMotor(int direction) {
-  disableRightMotor();
+  stopRightMotor();
+  if (direction != 1 && direction != -1) return;
+  if (emergencyStopActive()) { stopMotors(); return; }
 
-  if (direction != 1 && direction != -1) {
-    return;
-  }
+  digitalWrite(rightMotor_IN3, direction == 1 ? HIGH : LOW);
+  digitalWrite(rightMotor_IN4, direction == -1 ? HIGH : LOW);
 
-  if (emergencyStopActive()) {
-    return;
-  }
-
-  digitalWrite(
-    rightMotor_IN3,
-    direction == 1 ? HIGH : LOW
-  );
-
-  digitalWrite(
-    rightMotor_IN4,
-    direction == -1 ? HIGH : LOW
-  );
-
-  // Recheck immediately before enabling.
-  if (emergencyStopActive()) {
-    disableRightMotor();
-    return;
-  }
-
-  if (rightPwmAttached) {
-    if (!ledcWrite(rightMotor_PWM, MOTOR_PWM_DUTY)) {
-      estopLatched = true;
-      disableRightMotor();
-    }
-  } else {
-    digitalWrite(rightMotor_PWM, HIGH);
-  }
+  if (emergencyStopActive()) { stopMotors(); return; }
+  if (pwmModeEnabled) ledcWrite(rightMotor_PWM, MOTOR_TEST_DUTY);
+  else digitalWrite(rightMotor_PWM, HIGH);
 }
-
-
-volatile bool estopLatched = false;
-
-void ARDUINO_ISR_ATTR onEmergencyStop() {
-  estopLatched = true;
-}
-
 
 /* ============================================================
    3. GRID MAP - INITIALISATION AND SERIAL DISPLAY
@@ -569,91 +525,26 @@ void setup() {
   pinMode(ESTOP_PIN, INPUT_PULLUP);
   
   
+  
   stopMotors();
-
-  // Capture an E-stop already held at startup.
-  if (digitalRead(ESTOP_PIN) == LOW) {
-    estopLatched = true;
-  }
-
-  attachInterrupt(
-    digitalPinToInterrupt(ESTOP_PIN),
-    onEmergencyStop,
-    FALLING
-  );
-
-   
-  // Independent LEDC PWM setup.
-  // Arduino-ESP32 3.x API.
-  const uint32_t PWM_FREQUENCY_HZ = 1000;
-  const uint8_t PWM_RESOLUTION_BITS = 8;
-
-  leftPwmAttached = ledcAttach(
-    leftMotor_PWM,
-    PWM_FREQUENCY_HZ,
-    PWM_RESOLUTION_BITS
-  );
-
-  rightPwmAttached = ledcAttach(
-    rightMotor_PWM,
-    PWM_FREQUENCY_HZ,
-    PWM_RESOLUTION_BITS
-  );
-
-  // Start at zero duty on both channels.
-  bool leftZeroOk =
-      leftPwmAttached &&
-      ledcWrite(leftMotor_PWM, 0);
-
-  bool rightZeroOk =
-      rightPwmAttached &&
-      ledcWrite(rightMotor_PWM, 0);
-
-  Serial.printf(
-    "LEFT PWM: %s\n",
-    leftZeroOk ? "OK" : "FAILED"
-  );
-
-  Serial.printf(
-    "RIGHT PWM: %s\n",
-    rightZeroOk ? "OK" : "FAILED"
-  );
-
-  // Lock out motor tests if either output fails.
-  if (!leftZeroOk || !rightZeroOk) {
-    estopLatched = true;
-    stopMotors();
-
-    Serial.println(
-      "PWM INITIALISATION FAILED - TEST LOCKED OUT"
-    );
-  }
-
-   
   initialiseMap();
-  printMap();
 
-  Serial.println("LOGISTICS BOT - MOTOR BENCH TEST");
-  Serial.println("Software E-stop latch enabled.");
-  Serial.println("Wheels must be raised.");
+  // Latch a pressed E-stop before accepting any command.
+  if (digitalRead(ESTOP_PIN) == LOW) estopLatched = true;
+  attachInterrupt(digitalPinToInterrupt(ESTOP_PIN),
+                  onEmergencyStop, FALLING);
 
-  Serial.println("COMMANDS:");
-  Serial.println("1 = LEFT forward");
-  Serial.println("2 = LEFT reverse");
-  Serial.println("3 = RIGHT forward");
-  Serial.println("4 = RIGHT reverse");
-  Serial.println("0 = STOP");
+  Serial.println("LOGISTICS BOT - MOTOR DRIVER BENCH TEST");
+  Serial.println("WHEELS OFF THE GROUND. E-stop is software-latched.");
+  if (emergencyStopActive()) {
+    Serial.println("E-STOP ACTIVE: commands locked until reset.");
+    return;
+  }
+  Serial.println("L=left forward, l=left reverse");
+  Serial.println("R=right forward, r=right reverse, X=stop");
+  Serial.println("Each motor command runs for at most 500 ms.");
 }
 
-
-  // Navigation dry-run test
-  moveTile();
-
-  // Enable one at a time for route printing:
-  // snake();
-  // centreSpiral();
-  // sweep360();
-}
 
 
 /* ============================================================
@@ -801,102 +692,70 @@ void readAllDistances(float* front, float* left, float* right,
 }
 
 
-/* ============================================================
-   6. MAIN LOOP - GUARDED MOTOR BENCH TEST
-   ============================================================ */
 
+/* ============================================================
+   6. MAIN LOOP - SERIAL MOTOR BENCH TESTING
+   ============================================================ */
 void loop() {
+  const unsigned long MOTOR_TEST_MS = 500UL;
+  static unsigned long testStartMs = 0;
   static bool testRunning = false;
-  static unsigned long testStartedMs = 0;
   static bool estopReported = false;
 
-  // 6.1 Highest-priority software safety check.
   if (emergencyStopActive()) {
     stopMotors();
     testRunning = false;
-
     if (!estopReported) {
-      Serial.println("E-STOP LATCHED - MOTORS DISABLED");
+      Serial.println("E-STOP LATCHED: MOTORS OFF; reset required.");
       estopReported = true;
     }
-
-    while (Serial.available() > 0) {
-      Serial.read();
-    }
-
+    while (Serial.available() > 0) Serial.read();
     return;
   }
 
-  // 6.2 Non-blocking automatic timeout.
-  if (testRunning &&
-      millis() - testStartedMs >= MOTOR_TEST_MS) {
-    stopMotors();
-    testRunning = false;
-
-    Serial.println("AUTO STOP - 500 ms elapsed");
-  }
-
-  // 6.3 Wait for an explicit Serial command.
-  if (Serial.available() == 0) {
-    return;
-  }
-
-  char command = (char)Serial.read();
-
-  // Ignore Serial Monitor line endings.
-  if (command == '\n' || command == '\r') {
-    return;
-  }
-
-  // Manual stop is always accepted.
-  if (command == '0') {
-    stopMotors();
-    testRunning = false;
-    Serial.println("MANUAL STOP");
-    return;
-  }
-
-  // Do not restart or extend a running test.
+  // One command is allowed at a time; timeout cannot be extended.
   if (testRunning) {
-    Serial.println("BUSY - WAIT FOR AUTO STOP");
+    if (millis() - testStartMs >= MOTOR_TEST_MS) {
+      stopMotors();
+      testRunning = false;
+      Serial.println("500 ms COMPLETE: MOTORS OFF");
+      while (Serial.available() > 0) Serial.read();
+    } else if (Serial.available() > 0) {
+      char input = Serial.read();
+      if (input == 'X' || input == 'x') {
+        stopMotors();
+        testRunning = false;
+        Serial.println("MANUAL STOP: MOTORS OFF");
+        while (Serial.available() > 0) Serial.read();
+      }
+    }
+    return;
+  }
+
+  if (Serial.available() == 0) return;
+  char command = Serial.read();
+  if (command == '\n' || command == '\r' || command == ' ') return;
+  if (command == 'X' || command == 'x') {
+    stopMotors();
+    Serial.println("MOTORS OFF");
     return;
   }
 
   stopMotors();
-
-  // 6.4 Select exactly one motor and direction.
   switch (command) {
-    case '1':
-      setLeftMotor(1);
-      break;
-
-    case '2':
-      setLeftMotor(-1);
-      break;
-
-    case '3':
-      setRightMotor(1);
-      break;
-
-    case '4':
-      setRightMotor(-1);
-      break;
-
+    case 'L': setLeftMotor(1);  Serial.println("LEFT FORWARD");  break;
+    case 'l': setLeftMotor(-1); Serial.println("LEFT REVERSE");  break;
+    case 'R': setRightMotor(1); Serial.println("RIGHT FORWARD"); break;
+    case 'r': setRightMotor(-1);Serial.println("RIGHT REVERSE"); break;
     default:
-      Serial.println("INVALID COMMAND: USE 0-4");
+      Serial.println("UNKNOWN: use L, l, R, r or X");
       return;
   }
 
-  // Check again after the motor function.
   if (emergencyStopActive()) {
     stopMotors();
-    testRunning = false;
     return;
   }
-
-  testStartedMs = millis();
+  testStartMs = millis();
   testRunning = true;
-
-  Serial.println("MOTOR TEST STARTED - MAX 500 ms");
 }
-
