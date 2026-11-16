@@ -1,10 +1,7 @@
 // LOGISTICS BOT - ESP32 / L298N / 3x HC-SR04
-// PART 1: STANDALONE AUTONOMOUS ROBOT
- // CURRENT STAGE: MOTOR DRIVER BENCH TESTING
  // SERIAL MONITOR: 115200 BAUD
  // Motors run only during 500 ms Serial-commanded bench tests.
 // Emergency stop uses a software latch;
-// it is not an independently verified hardware stop.
 // Grid map is initialised but not updated by movement.
 /* ============================================================
    1. CONFIGURATION - PIN ASSIGNMENTS AND SENSOR LIMITS
@@ -41,39 +38,6 @@ const unsigned long SENSOR_REPORT_MS = 1000UL;
 /* ============================================================
    2. MOTOR CONTROL AND EMERGENCY STOP
    ============================================================ */
-volatile bool estopLatched = false;
-
-bool leftPwmAttached = false;
-bool rightPwmAttached = false;
-
-const uint8_t MOTOR_PWM_DUTY = 180;
-const unsigned long MOTOR_TEST_MS = 500UL;
-
-// Disable LEFT bridge before changing direction.
-void disableLeftMotor() {
-  if (leftPwmAttached) {
-    ledcWrite(leftMotor_PWM, 0);
-  } else {
-    digitalWrite(leftMotor_PWM, LOW);
-  }
-
-  digitalWrite(leftMotor_IN1, LOW);
-  digitalWrite(leftMotor_IN2, LOW);
-}
-
-// Disable RIGHT bridge before changing direction.
-void disableRightMotor() {
-  if (rightPwmAttached) {
-    ledcWrite(rightMotor_PWM, 0);
-  } else {
-    digitalWrite(rightMotor_PWM, LOW);
-  }
-
-  digitalWrite(rightMotor_IN3, LOW);
-  digitalWrite(rightMotor_IN4, LOW);
-}
-
-
 volatile bool estopLatched = false;
 bool pwmModeEnabled = false;
 const uint8_t MOTOR_TEST_DUTY = 192; // PWM only: 192/255 (8-bit)
