@@ -40,7 +40,7 @@ const unsigned long SENSOR_REPORT_MS = 1000UL;
 volatile bool estopLatched = false;
 bool motorFaultLatched = false;
 bool pwmModeEnabled = false;
-const uint8_t MOTOR_TEST_DUTY = 192; // PWM only: 192/255 (8-bit)
+const uint8_t MOTOR_TEST_DUTY = 128; // Initial bench test: 128/255 (50.2% duty)
 
 void ARDUINO_ISR_ATTR onEmergencyStop() {
   estopLatched = true;
@@ -127,8 +127,6 @@ void setRightMotor(int direction) {
   } else {
     digitalWrite(rightMotor_PWM, HIGH);
   }
-}
-
 }
 
 /* ============================================================
@@ -505,12 +503,6 @@ void centreSpiral() {
    ============================================================ */
 void setup() {
   Serial.begin(115200);
-  WiFi.begin(ssid, password);
- while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("\nConnected to WiFi!");
   pinMode(senseRight_PIN_TRIG, OUTPUT);  
   pinMode(senseLeft_PIN_TRIG, OUTPUT);      
   pinMode(senseFront_PIN_TRIG, OUTPUT);     
