@@ -1,5 +1,3 @@
-#include "esp_system.h"
-#include "soc/gpio_struct.h"
 #include <math.h>
 #include <stdlib.h>
 
@@ -94,7 +92,7 @@ void latchMotorFault() {
 
 // direction: +1 forward, -1 reverse, 0 stop.
 void setLeftMotor(int direction) {
-  stopLeftMotor();
+   stopLeftMotor();
 
    if (!enforceMotorInterlock()) return;
    if (direction != 1 && direction != -1) return;
@@ -287,29 +285,31 @@ void setup() {
   }
   pwmModeEnabled = true;
   stopMotors();
- Serial.printf("PWM enabled: 1000 Hz / 8-bit / %d duty\n", MOTOR_TEST_DUTY);
+   Serial.printf(
+    "PWM: 1000 Hz | 8-bit | duty=%u/255\n",
+    (unsigned)MOTOR_TEST_DUTY
+  );
 
-Serial.println("GRID: U/D/L/R = one 20cm tile");
-Serial.println("TURNS: Q = left 90, E = right 90");
-Serial.println("DISTANCE: 1 = 10cm, 2 = 20cm");
-Serial.println("CALIBRATE: C1, C2, CQ, CE");
-Serial.println("HOME: H = reset pose after physical alignment");
-Serial.println("BENCH: A/l left, S/r right, F/B both");
-Serial.println("+/- bench duration; X stop; ? status");
-Serial.println("Serial Monitor line ending: NEWLINE");
+  Serial.println("GRID: U/D/L/R = one 20cm tile");
+  Serial.println("TURNS: Q/E = left/right 90 degrees");
+  Serial.println("DISTANCE: 1/2 = forward 10cm/20cm");
+  Serial.println("CALIBRATE: C1, C2, CQ, CE");
+  Serial.println("HOME: H = physical grid alignment");
+  Serial.println("BENCH: A/l left, S/r right, F/B both");
+  Serial.println("CONTROL: +/- duration, X stop, ? status");
+  Serial.println("SERIAL: 115200 baud, Newline ending");
 
-Serial.printf(
-  "Bench: %lu ms | Maximum movement: %lu ms\n",
-  motorTestMs,
-  MOTION_MAX_MS
-);
+  Serial.printf(
+    "Bench duration: %lu ms | Limits: %lu-%lu ms\n",
+    motorTestMs,
+    MOTOR_TEST_MIN_MS,
+    MOTOR_TEST_MAX_MS
+  );
 
- Serial.printf(
-  "Test duration: %lu ms | limits: %lu-%lu ms\n",
-  motorTestMs,
-  MOTOR_TEST_MIN_MS,
-  MOTOR_TEST_MAX_MS
- );
+  Serial.printf(
+    "Maximum movement duration: %lu ms\n",
+    MOTION_MAX_MS
+  );
 }
 
 /* ============================================================
@@ -388,8 +388,8 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
       validSamples[validCount++] = cm;
 
       if (nearestValidSampleCm != nullptr &&
-          (*nearestValidSampleCm < 0.0f ||
-           cm < *nearestValidSampleCm)) {
+        (*nearestValidSampleCm < 0.0f ||
+          cm < *nearestValidSampleCm)) {
         *nearestValidSampleCm = cm;
       }
     }
@@ -505,19 +505,20 @@ void cancelMotion(const char* message) {
     Serial.println("STOP PWM READBACK FAILED: RESET REQUIRED");
   }
 
-    if (motionRunning ||
-         (motionPurpose == GRID && stepIndex > 0)) {
-       poseKnown = false;
-   
-       Serial.println(
-         "POSE UNKNOWN: movement interrupted; physical alignment required"
-       );
-     }
+      if (motionRunning ||
+      (motionPurpose == GRID && stepIndex > 0)) {
+    poseKnown = false;
+
+    Serial.println(
+      "POSE UNKNOWN: movement interrupted; physical alignment required"
+    );
+  }
 
   motionRunning = false;
   waitingForMeasurement = false;
   motionPurpose = NONE;
   stepCount = 0;
+  stepIndex = 0;
   calibrationKind = 0;
 
   Serial.println(message);
@@ -793,7 +794,7 @@ void processCommand(const char* command) {
   }
   if (c == 'Q' || c == 'E') {
     if ((c == 'Q' && !calibratedLeft) ||
-       (c == 'E' && !calibratedRight)) {
+      (c == 'E' && !calibratedRight)) {
      poseKnown = false;
      Serial.println("POSE UNKNOWN: turn not calibrated");
    }
