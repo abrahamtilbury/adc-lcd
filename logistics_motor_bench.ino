@@ -531,12 +531,6 @@ void setup() {
 
   initialiseMap();
 
-
-   // Latch a pressed E-stop before accepting any command.
-   emergencyStopActive();
-  attachInterrupt(digitalPinToInterrupt(ESTOP_PIN),
-                  onEmergencyStop, FALLING);
-
   Serial.println("LOGISTICS BOT - MOTOR DRIVER BENCH TEST");
   Serial.println("WHEELS OFF THE GROUND. E-stop is software-latched.");
   if (emergencyStopActive()) {
@@ -768,6 +762,8 @@ void loop() {
         }
       }
     }
+    return;
+  }
 
   if (Serial.available() == 0) return;
   char command = Serial.read();
