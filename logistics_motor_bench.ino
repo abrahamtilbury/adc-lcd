@@ -172,7 +172,14 @@ void setRightMotor(int direction) {
    3. GRID MAP - INITIALISATION AND SERIAL DISPLAY
    ============================================================ */
 constexpr int MAP_SIZE = 9;
+
+// -1 = unknown, 0 = clear, 1 = blocked.
 int8_t tileMap[MAP_SIZE][MAP_SIZE];
+
+// Record visits separately from obstacle status.
+uint8_t tileVisits[MAP_SIZE][MAP_SIZE];
+
+constexpr uint8_t AUTO_MAX_TILES = 81;
 
 // Robot's provisional grid position
 int robotRow = MAP_SIZE - 1;
@@ -201,11 +208,13 @@ void initialiseMap() {
   for (int row = 0; row < MAP_SIZE; row++) {
     for (int col = 0; col < MAP_SIZE; col++) {
       tileMap[row][col] = -1;
+      tileVisits[row][col] = 0;
     }
   }
 
   // Starting tile: bottom-left
   tileMap[MAP_SIZE - 1][0] = 0;
+  tileVisits[MAP_SIZE - 1][0] = 1;
 }
 
 void printMap() {
@@ -492,6 +501,8 @@ MotionPurpose motionPurpose = NONE;
 char calibrationKind = 0;
 unsigned long calibrationTestMs = 0;
 int nextRow = 0, nextCol = 0;
+uint8_t autonomousMode = 0; // 0=off, 1=one tile, 2=continuous
+uint8_t autonomousMoves = 0;
 
 void cancelMotion(const char* message) {
   stopMotors();
@@ -519,6 +530,7 @@ void cancelMotion(const char* message) {
   stepCount = 0;
   stepIndex = 0;
   calibrationKind = 0;
+  autonomousMode = 0;
 
   Serial.println(message);
 }
@@ -548,10 +560,44 @@ bool beginStep() {
     const float needed = (motionPurpose == CALIBRATE)
         ? CALIBRATION_CLEARANCE_CM
         : s.forwardCm + FRONT_OBSTACLE_CM + 5.0f;
-    if (!enforceMotorInterlock() || median < 0.0f ||
-        nearest < 0.0f || nearest <= needed) {
-      cancelMotion("FRONT CLEARANCE INVALID/TOO CLOSE: motion cancelled");
+        if (!enforceMotorInterlock()) {
+      cancelMotion("INTERLOCK DURING CLEARANCE CHECK");
       return false;
+    }
+
+    // Insufficient valid echoes cannot classify a tile.
+    if (median < 0.0f || nearest < 0.0f) {
+      cancelMotion("FRONT ECHO INVALID: motion cancelled");
+      return false;
+    }
+
+    // A close return makes the target unsafe to enter.
+    if (nearest <= needed) {
+      if (motionPurpose == GRID && inMap(nextRow, nextCol)) {
+        tileMap[nextRow][nextCol] = 1;
+      }
+
+      if (motionPurpose == GRID && autonomousMode != 0) {
+        stopMotors();
+        motionRunning = false;
+        motionPurpose = NONE;
+        stepCount = 0;
+        stepIndex = 0;
+
+        Serial.printf(
+          "AUTO: tile (%d,%d) BLOCKED; selecting another\n",
+          nextCol, nextRow
+        );
+        return false;
+      }
+
+      cancelMotion("FRONT BLOCKED: motion cancelled");
+      return false;
+    }
+
+    // Sensor clearance confirmed, travel not yet confirmed.
+    if (motionPurpose == GRID && inMap(nextRow, nextCol)) {
+      tileMap[nextRow][nextCol] = 0;
     }
   }
 
@@ -632,16 +678,34 @@ void advanceMotion() {
     return;
   }
 
-    if (motionPurpose == GRID && poseKnown) {
+   if (motionPurpose == GRID && poseKnown) {
     robotRow = nextRow;
     robotCol = nextCol;
 
-    // Mark the estimated destination as visited only
-    // after the complete grid movement finishes.
     tileMap[robotRow][robotCol] = 0;
 
-    Serial.printf("ESTIMATED GRID POSE: (%d,%d), heading=%d\n",
-                  robotRow, robotCol, robotHeading);
+    if (tileVisits[robotRow][robotCol] < 255) {
+      ++tileVisits[robotRow][robotCol];
+    }
+
+    if (autonomousMode != 0) {
+      ++autonomousMoves;
+
+      if (autonomousMode == 1 ||
+          autonomousMoves >= AUTO_MAX_TILES) {
+        autonomousMode = 0;
+
+        Serial.println(
+          "AUTO: tile complete; stopped (one-step/limit)"
+        );
+      }
+    }
+
+    Serial.printf(
+      "ESTIMATED GRID POSE: X=%d,Y=%d, heading=%d\n",
+      robotCol, robotRow, robotHeading
+    );
+  }
   } else if (motionPurpose == CALIBRATE) {
     waitingForMeasurement = true;
     poseKnown = false;
@@ -689,6 +753,85 @@ void recordMeasurement(const char* input) {
   calibrationKind = 0;
 }
 
+// Prefer unknown tiles, then least-visited clear tiles.
+// Direction tie-break: front, right, left, back.
+void startAutonomousTile() {
+  if (autonomousMode == 0 || motionRunning ||
+      waitingForMeasurement || motionPurpose != NONE) return;
+
+  if (!poseKnown || !calibrated20 || !calibratedLeft ||
+      !calibratedRight || !movementPermitted()) {
+    autonomousMode = 0;
+    Serial.println(
+      "AUTO LOCKED: calibrate C2/CQ/CE, physically align, send H"
+    );
+    return;
+  }
+
+  const int dRow[4] = {-1, 0, 1, 0};
+  const int dCol[4] = {0, 1, 0, -1};
+  const int relative[4] = {0, 1, 3, 2};
+
+  int bestDir = -1;
+  int bestScore = 99999;
+
+  for (int i = 0; i < 4; ++i) {
+    const int direction = (robotHeading + relative[i]) % 4;
+    const int row = robotRow + dRow[direction];
+    const int col = robotCol + dCol[direction];
+
+    if (!inMap(row, col) || tileMap[row][col] == 1) {
+      continue;
+    }
+
+    const int score =
+        (tileMap[row][col] == -1 ? 0 : 1000) +
+        10 * tileVisits[row][col] + i;
+
+    if (score < bestScore) {
+      bestScore = score;
+      bestDir = direction;
+    }
+  }
+
+  if (bestDir < 0) {
+    autonomousMode = 0;
+    Serial.println("AUTO STOP: no adjacent unblocked tile");
+    return;
+  }
+
+  nextRow = robotRow + dRow[bestDir];
+  nextCol = robotCol + dCol[bestDir];
+
+  const int delta = (bestDir - robotHeading + 4) % 4;
+
+  stepCount = 0;
+
+  if (delta == 1 || delta == 2) {
+    addStep(TURN_RIGHT, 1, -1, turnRight90Ms);
+  }
+
+  if (delta == 2) {
+    addStep(TURN_RIGHT, 1, -1, turnRight90Ms);
+  }
+
+  if (delta == 3) {
+    addStep(TURN_LEFT, -1, 1, turnLeft90Ms);
+  }
+
+  addStep(DRIVE, 1, 1, forward20Ms, 20.0f);
+
+  Serial.printf(
+    "AUTO: target (%d,%d), state=%d, visits=%u\n",
+    nextCol,
+    nextRow,
+    tileMap[nextRow][nextCol],
+    (unsigned)tileVisits[nextRow][nextCol]
+  );
+
+  beginPlan(GRID);
+}
+
 void processCommand(const char* command) {
   if (waitingForMeasurement) {
     recordMeasurement(command);
@@ -732,27 +875,56 @@ void processCommand(const char* command) {
     Serial.printf("CAL: 10=%lu(%d) 20=%lu(%d) LEFT90=%lu(%d) RIGHT90=%lu(%d) ms\n",
                   forward10Ms, calibrated10, forward20Ms, calibrated20,
                   turnLeft90Ms, calibratedLeft, turnRight90Ms, calibratedRight);
-    Serial.printf("POSE: %s (%d,%d) heading=%d\n",
-                  poseKnown ? "ESTIMATED" : "UNKNOWN", robotRow, robotCol, robotHeading);
+        Serial.printf(
+      "POSE: %s X=%d,Y=%d heading=%d | auto=%u\n",
+      poseKnown ? "ESTIMATED" : "UNKNOWN",
+      robotCol,
+      robotRow,
+      robotHeading,
+      (unsigned)autonomousMode
+    );
+    return;
+  }
+  if (c == 'M') {
+    printMap();
     return;
   }
   if (c == 'H') {
-    robotRow = MAP_SIZE - 1;
+    initialiseMap();
+     robotRow = MAP_SIZE - 1;
     robotCol = 0;
     robotHeading = 0;
     poseKnown = true;
-    Serial.println("HOME SET: (8,0) facing U. Requires PHYSICAL alignment first.");
-    return;
-  }
+    Serial.println(
+      "HOME SET: X=0,Y=8 facing U. Fresh map; align physically first."
+    );
   if (c == '+' || c == '-') {
     if (c == '+') motorTestMs = min(motorTestMs + MOTOR_TEST_STEP_MS,
                                    MOTOR_TEST_MAX_MS);
     else motorTestMs = max(motorTestMs - MOTOR_TEST_STEP_MS,
                            MOTOR_TEST_MIN_MS);
     Serial.printf("BENCH DURATION=%lu ms\n", motorTestMs);
+    Serial.println("AUTO: N = choose one tile | Z = keep exploring");
+    Serial.println("MAP: M = show tile states (-1/0/1)");
     return;
   }
 
+    if (c == 'N' || c == 'Z') {
+    if (!poseKnown || !calibrated20 ||
+        !calibratedLeft || !calibratedRight) {
+      Serial.println(
+        "AUTO LOCKED: verify C2/CQ/CE, align robot, send H"
+      );
+      return;
+    }
+
+    autonomousMoves = 0;
+    autonomousMode = (c == 'N') ? 1 : 2;
+
+    startAutonomousTile();
+    return;
+  }
+     
   stepCount = 0;
   if (c == 'U' || c == 'D' || c == 'L' || c == 'R') {
     if (!poseKnown || !calibrated20) {
@@ -861,5 +1033,10 @@ void loop() {
     }
   }
   advanceMotion();
+   // Decide on another tile only when the controller is idle.
+  if (autonomousMode != 0 && !motionRunning &&
+      !waitingForMeasurement && motionPurpose == NONE) {
+    startAutonomousTile();
+  }
 }
 
