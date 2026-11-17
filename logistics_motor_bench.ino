@@ -36,7 +36,7 @@ const unsigned long SENSOR_REPORT_MS = 1000UL;
 volatile bool estopLatched = false;
 bool motorFaultLatched = false;
 bool pwmModeEnabled = false;
-const uint8_t MOTOR_TEST_DUTY = 128; // Initial bench test: 128/255 (50.2% duty)
+const uint8_t MOTOR_TEST_DUTY = 180; // Initial bench test: 180/255 (50.2% duty)
 
 void ARDUINO_ISR_ATTR onEmergencyStop() {
   estopLatched = true;
@@ -539,8 +539,8 @@ void setup() {
   }
  
   // Stage B only: ESP32 Arduino core v3.x LEDC API.
-  const bool leftPwmReady = ledcAttach(leftMotor_PWM, 2000, 8);
-  const bool rightPwmReady = ledcAttach(rightMotor_PWM, 2000, 8);
+  const bool leftPwmReady = ledcAttach(leftMotor_PWM, 1000, 8);
+  const bool rightPwmReady = ledcAttach(rightMotor_PWM, 1000, 8);
   if (!leftPwmReady || !rightPwmReady) {
     if (leftPwmReady) ledcDetach(leftMotor_PWM);
     if (rightPwmReady) ledcDetach(rightMotor_PWM);
@@ -551,7 +551,7 @@ void setup() {
   }
   pwmModeEnabled = true;
   stopMotors();
- Serial.printf("PWM enabled: 2000 Hz / 8-bit / %d duty\n", MOTOR_TEST_DUTY);
+ Serial.printf("PWM enabled: 1000 Hz / 8-bit / %d duty\n", MOTOR_TEST_DUTY);
 
 
   Serial.println("L=left forward, l=left reverse");
