@@ -1005,8 +1005,7 @@ void loop() {
   }
   while (Serial.available() > 0) {
     char c = (char)Serial.read();
-        if ((c == 'X' || c == 'x') &&
-        (motionRunning || waitingForMeasurement || length == 0)) {
+        if ((c == 'X' || c == 'x') {
       length = 0;
       cancelMotion("MANUAL X: BOTH MOTORS OFF; operation cancelled");
 
