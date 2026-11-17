@@ -770,13 +770,28 @@ void loop() {
    }
 
   // One command is allowed at a time; timeout cannot be extended.
+  
   if (testRunning) {
     if (millis() - testStartMs >= MOTOR_TEST_MS) {
       stopMotors();
       testRunning = false;
+
+      const uint32_t leftDuty = ledcRead(leftMotor_PWM);
+      const uint32_t rightDuty = ledcRead(rightMotor_PWM);
+
+      Serial.printf(
+        "PWM AFTER STOP: LEFT=%lu RIGHT=%lu | %s\n",
+        (unsigned long)leftDuty,
+        (unsigned long)rightDuty,
+        (leftDuty == 0 && rightDuty == 0)
+          ? "OK - BOTH ZERO"
+          : "WARNING - NONZERO DUTY"
+      );
+
       Serial.println("500 ms COMPLETE: MOTORS OFF");
       while (Serial.available() > 0) Serial.read();
     } else {
+
       while (Serial.available() > 0) {
         char input = Serial.read();
 
