@@ -608,8 +608,10 @@ float readDistanceCm(int trigPin, int echoPin) {
 // The filtered front distance can indicate an obstacle.
 // A separate close-sample flag preserves conservative detection.
 bool isFrontBlocked(float distanceCm) {
-  return distanceCm >= 0.0f && distanceCm <= FRONT_OBSTACLE_CM;
+  return distanceCm < 0.0f ||
+         distanceCm <= FRONT_OBSTACLE_CM;
 }
+
 
 // Five samples per sensor; at least three must be valid.
 // Report the median of valid samples.
@@ -633,10 +635,15 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
    if (!enforceMotorInterlock()) return -1.0f;
     float cm = readDistanceCm(trigPin, echoPin);
 
-    if (cm >= 0.0f) {
-      validSamples[validCount] = cm;
-      validCount++;
-    }
+   if (cm >= 0.0f) {
+     validSamples[validCount] = cm;
+     validCount++;
+   
+     if (closeSampleDetected != nullptr &&
+         cm <= FRONT_OBSTACLE_CM) {
+       *closeSampleDetected = true;
+     }
+   }
 
     if (i < SAMPLE_COUNT - 1) {
       delay(SENSOR_GAP_MS);
@@ -661,14 +668,6 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
         validSamples[j] = temp;
       }
     }
-  }
-
-  // Conservative close-obstacle warning.
-  // The nearest valid sample determines the warning,
-  // without changing the reported median.
-  if (closeSampleDetected != nullptr) {
-    *closeSampleDetected =
-        (validSamples[0] <= FRONT_OBSTACLE_CM);
   }
 
   // Always return the median valid distance.
