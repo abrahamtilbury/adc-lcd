@@ -496,25 +496,41 @@ void centreSpiral() {
 /* ============================================================
    4. SETUP - INITIALISE HARDWARE AND SAFETY INPUTS
    ============================================================ */
+
 void setup() {
   Serial.begin(115200);
-  pinMode(senseRight_PIN_TRIG, OUTPUT);  
-  pinMode(senseLeft_PIN_TRIG, OUTPUT);      
-  pinMode(senseFront_PIN_TRIG, OUTPUT);     
-  pinMode(senseRight_PIN_ECHO, INPUT);      
-  pinMode(senseLeft_PIN_ECHO, INPUT);    
-  pinMode(senseFront_PIN_ECHO, INPUT);        
 
+  // Establish LOW output levels before enabling GPIO outputs.
+  digitalWrite(leftMotor_PWM, LOW);
+  digitalWrite(rightMotor_PWM, LOW);
+  digitalWrite(leftMotor_IN1, LOW);
+  digitalWrite(leftMotor_IN2, LOW);
+  digitalWrite(rightMotor_IN3, LOW);
+  digitalWrite(rightMotor_IN4, LOW);
+
+  pinMode(leftMotor_PWM, OUTPUT);
+  pinMode(rightMotor_PWM, OUTPUT);
   pinMode(leftMotor_IN1, OUTPUT);
   pinMode(leftMotor_IN2, OUTPUT);
   pinMode(rightMotor_IN3, OUTPUT);
   pinMode(rightMotor_IN4, OUTPUT);
-  pinMode(leftMotor_PWM, OUTPUT);
-  pinMode(rightMotor_PWM, OUTPUT);
-  pinMode(ESTOP_PIN, INPUT_PULLUP);
-  
+
   stopMotors();
+
+  pinMode(ESTOP_PIN, INPUT_PULLUP);
+  emergencyStopActive();
+  attachInterrupt(digitalPinToInterrupt(ESTOP_PIN),
+                  onEmergencyStop, FALLING);
+
+  pinMode(senseRight_PIN_TRIG, OUTPUT);
+  pinMode(senseLeft_PIN_TRIG, OUTPUT);
+  pinMode(senseFront_PIN_TRIG, OUTPUT);
+  pinMode(senseRight_PIN_ECHO, INPUT);
+  pinMode(senseLeft_PIN_ECHO, INPUT);
+  pinMode(senseFront_PIN_ECHO, INPUT);
+
   initialiseMap();
+
 
    // Latch a pressed E-stop before accepting any command.
    emergencyStopActive();
@@ -738,17 +754,20 @@ void loop() {
       testRunning = false;
       Serial.println("500 ms COMPLETE: MOTORS OFF");
       while (Serial.available() > 0) Serial.read();
-    } else if (Serial.available() > 0) {
-      char input = Serial.read();
-      if (input == 'X' || input == 'x') {
-        stopMotors();
-        testRunning = false;
-        Serial.println("MANUAL STOP: MOTORS OFF");
-        while (Serial.available() > 0) Serial.read();
+    } else {
+      while (Serial.available() > 0) {
+        char input = Serial.read();
+
+        if (input == 'X' || input == 'x') {
+          stopMotors();
+          testRunning = false;
+          Serial.println("MANUAL STOP: MOTORS OFF");
+
+          while (Serial.available() > 0) Serial.read();
+          break;
+        }
       }
     }
-    return;
-  }
 
   if (Serial.available() == 0) return;
   char command = Serial.read();
@@ -760,6 +779,7 @@ void loop() {
   }
 
   stopMotors();
+  testStartMs = millis();
   switch (command) { 
    case 'L':
      setLeftMotor(1);
@@ -791,7 +811,6 @@ void loop() {
   }
 
   if (!enforceMotorInterlock()) return;
-
-  testStartMs = millis();
+   
   testRunning = true;
 }
