@@ -1,3 +1,7 @@
+
+#include "esp_system.h"
+#include "soc/gpio_struct.h"
+
 // LOGISTICS BOT - ESP32 / L298N / 3x HC-SR04
 // SERIAL: 115200 BAUD
 // Software Estop
@@ -95,14 +99,26 @@ void setLeftMotor(int direction) {
 
    if (!enforceMotorInterlock()) return;
 
-   if (pwmModeEnabled) {
+   
+  if (pwmModeEnabled) {
     if (!ledcWrite(leftMotor_PWM, MOTOR_TEST_DUTY)) {
       latchMotorFault();
       return;
     }
-   } else {
+
+    const uint32_t actualDuty = ledcRead(leftMotor_PWM);
+
+    Serial.printf(
+      "LEFT PWM: requested=%u readback=%lu | %s\n",
+      (unsigned)MOTOR_TEST_DUTY,
+      (unsigned long)actualDuty,
+      actualDuty == MOTOR_TEST_DUTY ? "OK" : "MISMATCH"
+    );
+
+  } else {
     digitalWrite(leftMotor_PWM, HIGH);
-   }
+  }
+
    
    enforceMotorInterlock();
 }
@@ -118,14 +134,26 @@ void setRightMotor(int direction) {
 
   if (!enforceMotorInterlock()) return;
 
+  
   if (pwmModeEnabled) {
     if (!ledcWrite(rightMotor_PWM, MOTOR_TEST_DUTY)) {
       latchMotorFault();
       return;
     }
+
+    const uint32_t actualDuty = ledcRead(rightMotor_PWM);
+
+    Serial.printf(
+      "RIGHT PWM: requested=%u readback=%lu | %s\n",
+      (unsigned)MOTOR_TEST_DUTY,
+      (unsigned long)actualDuty,
+      actualDuty == MOTOR_TEST_DUTY ? "OK" : "MISMATCH"
+    );
+
   } else {
     digitalWrite(rightMotor_PWM, HIGH);
   }
+
 
   enforceMotorInterlock();
 }
@@ -806,7 +834,21 @@ void loop() {
       return;
   }
 
+  
   if (!enforceMotorInterlock()) return;
-   
+
+  // Read the ESP32 GPIO output register.
+  // All four motor direction pins are GPIO 0-31.
+  const uint32_t gpioOutputs = GPIO.out;
+
+  Serial.printf(
+    "DIRECTION OUTPUTS: IN1=%u IN2=%u IN3=%u IN4=%u\n",
+    (unsigned)((gpioOutputs >> leftMotor_IN1) & 1U),
+    (unsigned)((gpioOutputs >> leftMotor_IN2) & 1U),
+    (unsigned)((gpioOutputs >> rightMotor_IN3) & 1U),
+    (unsigned)((gpioOutputs >> rightMotor_IN4) & 1U)
+  );
+
   testRunning = true;
+
 }
