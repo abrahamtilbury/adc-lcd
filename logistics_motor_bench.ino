@@ -548,7 +548,7 @@ void setup() {
   }
   pwmModeEnabled = true;
   stopMotors();
-  Serial.println("PWM enabled: 2000 Hz / 8-bit / 192 duty");
+ Serial.printf("PWM enabled: 2000 Hz / 8-bit / %d duty\n", MOTOR_TEST_DUTY);
 
 
   Serial.println("L=left forward, l=left reverse");
