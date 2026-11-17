@@ -1,10 +1,10 @@
-
 #include "esp_system.h"
 #include "soc/gpio_struct.h"
+#include <math.h>
+#include <stdlib.h>
 
-// LOGISTICS BOT - ESP32 / L298N / 3x HC-SR04
+// LOGISTICS BOT - ESP32 / L298N / 3x HC-SR04 / E-STOP
 // SERIAL: 115200 BAUD
-// Software Estop
 /* ============================================================
    1. CONFIGURATION - PIN ASSIGNMENTS / SENSOR LIMITS
    ============================================================ */
@@ -27,10 +27,8 @@ const float SENSOR_MIN_CM = 2.0f;        // Minimum accepted measurement: 2 cm
 const float SENSOR_MAX_CM = 400.0f;      // Maximum accepted measurement: 400 cm
 const float FRONT_OBSTACLE_CM = 20.0f;
 
-// Provisional obstacle-detection threshold, not a verified stopping distance.
-// Reassess after measuring motor stopping performance.
-// Minimum 1000 ms between scan starts.
-// Not a guaranteed one-second reporting rate.
+// obstacle-detection threshold
+// 1000 ms between scan starts.
 // Blocking sensor measurements can exceed this interval.
 const unsigned long SENSOR_REPORT_MS = 1000UL;
 
@@ -211,7 +209,7 @@ void initialiseMap() {
     }
   }
 
-  // Starting / sweep tile: bottom-left
+  // Starting tile: bottom-left
   tileMap[MAP_SIZE - 1][0] = 0;
 }
 
@@ -648,146 +646,359 @@ void readAllDistances(float* front, float* left, float* right,
   );
 }
 
-
-
 /* ============================================================
-   6. MAIN LOOP - SERIAL MOTOR BENCH TESTING
+   6. NON-BLOCKING SERIAL MOTION AND INTERACTIVE CALIBRATION
    ============================================================ */
-void loop() {
-  static unsigned long testStartMs = 0;
-  static bool testRunning = false;
-  static bool estopReported = false;
+enum MotionKind : uint8_t { DRIVE, TURN_LEFT, TURN_RIGHT, BENCH };
+enum MotionPurpose : uint8_t { NONE, GRID, MANUAL, CALIBRATE, BENCH_TEST };
 
-   if (!enforceMotorInterlock()) {
-     testRunning = false;
-   
-     if (emergencyStopActive() && !estopReported) {
-       Serial.println("E-STOP LATCHED: MOTORS OFF; reset required.");
-       estopReported = true;
-     }
-   
-     while (Serial.available() > 0) Serial.read();
-     return;
-   }
+struct MotionStep {
+  MotionKind kind;
+  int leftDir, rightDir;
+  unsigned long durationMs;
+  float forwardCm;      // 0 = no forward clearance test
+};
 
-  // One command is allowed at a time; timeout cannot be extended.
-  
-  if (testRunning) {
-    if (millis() - testStartMs >= motorTestMs) {
-      stopMotors();
-      testRunning = false;
+MotionStep steps[3];
+uint8_t stepCount = 0;
+uint8_t stepIndex = 0;
+unsigned long stepStartMs = 0;
+unsigned long lastFrontMs = 0;
+bool motionRunning = false;
+bool waitingForMeasurement = false;
+MotionPurpose motionPurpose = NONE;
+char calibrationKind = 0;
+unsigned long calibrationTestMs = 0;
+int nextRow = 0, nextCol = 0;
 
-      const uint32_t leftDuty = ledcRead(leftMotor_PWM);
-      const uint32_t rightDuty = ledcRead(rightMotor_PWM);
+void cancelMotion(const char* message) {
+  stopMotors();
+  if (motionRunning) poseKnown = false;  // Partial movement: pose unknown.
+  motionRunning = false;
+  waitingForMeasurement = false;
+  motionPurpose = NONE;
+  stepCount = 0;
+  calibrationKind = 0;
+  Serial.println(message);
+}
 
-      Serial.printf(
-        "PWM AFTER STOP: LEFT=%lu RIGHT=%lu | %s\n",
-        (unsigned long)leftDuty,
-        (unsigned long)rightDuty,
-        (leftDuty == 0 && rightDuty == 0)
-          ? "OK - BOTH ZERO"
-          : "WARNING - NONZERO DUTY"
-      );
+void addStep(MotionKind kind, int left, int right,
+             unsigned long duration, float forwardCm = 0.0f) {
+  steps[stepCount++] = {kind, left, right, duration, forwardCm};
+}
 
-      Serial.printf(
-        "%lu ms COMPLETE: MOTORS OFF\n",
-        motorTestMs
-      );
-      while (Serial.available() > 0) Serial.read();
-    } else {
+bool beginStep() {
+  if (!enforceMotorInterlock()) {
+    cancelMotion("INTERLOCK: motion cancelled");
+    return false;
+  }
+  const MotionStep& s = steps[stepIndex];
+  if (s.durationMs < MOTION_MIN_MS || s.durationMs > MOTION_MAX_MS) {
+    cancelMotion("INVALID DURATION: motion cancelled");
+    return false;
+  }
 
-      while (Serial.available() > 0) {
-        char input = Serial.read();
+  // Motors remain off during the filtered pre-movement clearance scan.
+  stopMotors();
+  if (s.forwardCm > 0.0f) {
+    float nearest = -1.0f;
+    float median = readFilteredDistanceCm(
+        senseFront_PIN_TRIG, senseFront_PIN_ECHO, &nearest);
+    const float needed = (motionPurpose == CALIBRATE)
+        ? CALIBRATION_CLEARANCE_CM
+        : s.forwardCm + FRONT_OBSTACLE_CM + 5.0f;
+    if (!enforceMotorInterlock() || median < 0.0f ||
+        nearest < 0.0f || nearest <= needed) {
+      cancelMotion("FRONT CLEARANCE INVALID/TOO CLOSE: motion cancelled");
+      return false;
+    }
+  }
 
-        if (input == 'X' || input == 'x') {
-          stopMotors();
-          testRunning = false;
-          Serial.println("MANUAL STOP: MOTORS OFF");
+  motionRunning = true;  // A partial motor start must invalidate pose on abort.
+  if (s.leftDir) setLeftMotor(s.leftDir);
+  if (!enforceMotorInterlock()) {
+    cancelMotion("INTERLOCK DURING MOTOR START");
+    return false;
+  }
+  if (s.rightDir) setRightMotor(s.rightDir);
+  if (!enforceMotorInterlock()) {
+    cancelMotion("INTERLOCK DURING MOTOR START");
+    return false;
+  }
 
-          while (Serial.available() > 0) Serial.read();
-          break;
-        }
+  const uint32_t expectedLeft = s.leftDir ? MOTOR_TEST_DUTY : 0;
+  const uint32_t expectedRight = s.rightDir ? MOTOR_TEST_DUTY : 0;
+  if (ledcRead(leftMotor_PWM) != expectedLeft ||
+      ledcRead(rightMotor_PWM) != expectedRight) {
+    latchMotorFault();
+    cancelMotion("PWM READBACK MISMATCH: reset required");
+    return false;
+  }
+
+  stepStartMs = millis();
+  lastFrontMs = stepStartMs;
+  Serial.printf("STEP %u/%u: %lu ms; LEFT=%d RIGHT=%d\n",
+                stepIndex + 1, stepCount, s.durationMs,
+                s.leftDir, s.rightDir);
+  return true;
+}
+
+void beginPlan(MotionPurpose purpose) {
+  if (motionRunning || waitingForMeasurement || stepCount == 0) return;
+  motionPurpose = purpose;
+  stepIndex = 0;
+  beginStep();
+}
+
+void advanceMotion() {
+  if (!motionRunning) return;
+  if (!enforceMotorInterlock()) {
+    cancelMotion("INTERLOCK: motors off; reset required");
+    return;
+  }
+  const MotionStep s = steps[stepIndex];
+  if (millis() - stepStartMs < s.durationMs) {
+    if (s.forwardCm > 0.0f && millis() - lastFrontMs >= SENSOR_GAP_MS) {
+      lastFrontMs = millis();
+      const float cm = readDistanceCm(senseFront_PIN_TRIG,
+                                      senseFront_PIN_ECHO);
+      if (!enforceMotorInterlock() || cm < 0.0f ||
+          cm <= FRONT_OBSTACLE_CM) {
+        cancelMotion("FRONT OBSTACLE/INVALID ECHO: STOP; pose unknown");
       }
     }
     return;
   }
 
-  if (Serial.available() == 0) return;
-  char command = Serial.read();
-  if (command == '\n' || command == '\r' || command == ' ') return;
-  if (command == 'X' || command == 'x') {
-    stopMotors();
-    Serial.println("MOTORS OFF");
+  stopMotors();
+  if (ledcRead(leftMotor_PWM) != 0 || ledcRead(rightMotor_PWM) != 0) {
+    latchMotorFault();
+    cancelMotion("PWM REMAINED ON AFTER STOP: reset required");
+    return;
+  }
+  Serial.println("STEP COMPLETE: BOTH PWM OUTPUTS ZERO");
+
+  // Heading is only an estimate, not encoder/IMU-verified.
+  if (poseKnown) {
+    if (s.kind == TURN_LEFT) robotHeading = (robotHeading + 3) % 4;
+    if (s.kind == TURN_RIGHT) robotHeading = (robotHeading + 1) % 4;
+  }
+
+  motionRunning = false;
+  ++stepIndex;
+  if (stepIndex < stepCount) {
+    beginStep();
     return;
   }
 
-  stopMotors();
-  testStartMs = millis();
-  switch (command) { 
-   case 'L':
-     setLeftMotor(1);
-     if (!enforceMotorInterlock()) return;
-     Serial.println("LEFT FORWARD");
-     break;
-   
-   case 'l':
-     setLeftMotor(-1);
-     if (!enforceMotorInterlock()) return;
-     Serial.println("LEFT REVERSE");
-     break;
-   
-   case 'R':
-     setRightMotor(1);
-     if (!enforceMotorInterlock()) return;
-     Serial.println("RIGHT FORWARD");
-     break;
-   
-   case 'r':
-     setRightMotor(-1);
-     if (!enforceMotorInterlock()) return;
-     Serial.println("RIGHT REVERSE");
-     break;
-
-        case 'F':
-      setLeftMotor(1);
-      if (!enforceMotorInterlock()) return;
-
-      setRightMotor(1);
-      if (!enforceMotorInterlock()) return;
-
-      Serial.println("BOTH MOTORS FORWARD");
-      break;
-
-    case 'B':
-      setLeftMotor(-1);
-      if (!enforceMotorInterlock()) return;
-
-      setRightMotor(-1);
-      if (!enforceMotorInterlock()) return;
-
-      Serial.println("BOTH MOTORS REVERSE");
-      break;
-
-    default:
-      Serial.println("UNKNOWN: use L, l, R, r, F, B, +, - or X");
-      return;
+  if (motionPurpose == GRID && poseKnown) {
+    robotRow = nextRow;
+    robotCol = nextCol;
+    Serial.printf("ESTIMATED GRID POSE: (%d,%d), heading=%d\n",
+                  robotRow, robotCol, robotHeading);
+  } else if (motionPurpose == CALIBRATE) {
+    waitingForMeasurement = true;
+    poseKnown = false;
+    Serial.printf("CALIBRATION %c: enter measured %s, then ENTER (X cancels):\n",
+                  calibrationKind,
+                  (calibrationKind == '1' || calibrationKind == '2')
+                      ? "distance in cm" : "angle in degrees");
+  } else if (motionPurpose == MANUAL || motionPurpose == BENCH_TEST) {
+    if (s.kind == DRIVE || s.kind == BENCH) poseKnown = false;
   }
+  if (!waitingForMeasurement) motionPurpose = NONE;
+}
 
-  
+void recordMeasurement(const char* input) {
+  char* end = nullptr;
+  const float actual = strtof(input, &end);
+  if (end == input || *end != '\0' || !isfinite(actual) || actual <= 0.0f) {
+    Serial.println("INVALID: enter a positive number (e.g., 23.5), or X");
+    return;
+  }
+  const float target = (calibrationKind == '1') ? 10.0f :
+                       (calibrationKind == '2') ? 20.0f : 90.0f;
+  const float tolerance = (calibrationKind == '1') ? 0.5f :
+                          (calibrationKind == '2') ? 1.0f : 5.0f;
+  const double proposed = (double)calibrationTestMs * target / actual;
+  if (proposed < MOTION_MIN_MS || proposed > MOTION_MAX_MS) {
+    Serial.println("CALIBRATION OUT OF BOUNDS: X, then use shorter test conditions");
+    return;
+  }
+  const unsigned long corrected = (unsigned long)(proposed + 0.5);
+  const bool verified = fabsf(target - actual) <= tolerance;
+  // A timing is verified only if that exact timing was physically tested.
+  const unsigned long nextMs = verified ? calibrationTestMs : corrected;
+  switch (calibrationKind) {
+    case '1': forward10Ms = nextMs; calibrated10 = verified; break;
+    case '2': forward20Ms = nextMs; calibrated20 = verified; break;
+    case 'Q': turnLeft90Ms = nextMs; calibratedLeft = verified; break;
+    case 'E': turnRight90Ms = nextMs; calibratedRight = verified; break;
+  }
+  Serial.printf("MEASURED %.1f, TARGET %.1f => NEXT TEST %lu ms; %s\n",
+                actual, target, nextMs,
+                verified ? "VERIFIED (within test tolerance)" : "REPEAT CALIBRATION");
+  waitingForMeasurement = false;
+  motionPurpose = NONE;
+  calibrationKind = 0;
+}
+
+void processCommand(const char* command) {
+  if (waitingForMeasurement) {
+    recordMeasurement(command);
+    return;
+  }
+  if (motionRunning) {
+    Serial.println("BUSY: only X is accepted while motors run");
+    return;
+  }
   if (!enforceMotorInterlock()) return;
 
-  // Read the ESP32 GPIO output register.
-  // All four motor direction pins are GPIO 0-31.
-  const uint32_t gpioOutputs = GPIO.out;
+  if (command[0] == 'C' && command[2] == '\0' &&
+      (command[1] == '1' || command[1] == '2' ||
+       command[1] == 'Q' || command[1] == 'E')) {
+    calibrationKind = command[1];
+    stepCount = 0;
+    if (calibrationKind == '1') {
+      calibrationTestMs = forward10Ms;
+      addStep(DRIVE, 1, 1, calibrationTestMs, 10.0f);
+    } else if (calibrationKind == '2') {
+      calibrationTestMs = forward20Ms;
+      addStep(DRIVE, 1, 1, calibrationTestMs, 20.0f);
+    } else if (calibrationKind == 'Q') {
+      calibrationTestMs = turnLeft90Ms;
+      addStep(TURN_LEFT, -1, 1, calibrationTestMs);
+    } else {
+      calibrationTestMs = turnRight90Ms;
+      addStep(TURN_RIGHT, 1, -1, calibrationTestMs);
+    }
+    poseKnown = false;
+    beginPlan(CALIBRATE);
+    return;
+  }
 
-  Serial.printf(
-    "DIRECTION OUTPUTS: IN1=%u IN2=%u IN3=%u IN4=%u\n",
-    (unsigned)((gpioOutputs >> leftMotor_IN1) & 1U),
-    (unsigned)((gpioOutputs >> leftMotor_IN2) & 1U),
-    (unsigned)((gpioOutputs >> rightMotor_IN3) & 1U),
-    (unsigned)((gpioOutputs >> rightMotor_IN4) & 1U)
-  );
+  if (command[1] != '\0') {
+    Serial.println("UNKNOWN COMMAND. Use ?, U/D/L/R, Q/E, 1/2, C1/C2/CQ/CE, H, X");
+    return;
+  }
+  const char c = command[0];
+  if (c == '?') {
+    Serial.printf("CAL: 10=%lu(%d) 20=%lu(%d) LEFT90=%lu(%d) RIGHT90=%lu(%d) ms\n",
+                  forward10Ms, calibrated10, forward20Ms, calibrated20,
+                  turnLeft90Ms, calibratedLeft, turnRight90Ms, calibratedRight);
+    Serial.printf("POSE: %s (%d,%d) heading=%d\n",
+                  poseKnown ? "ESTIMATED" : "UNKNOWN", robotRow, robotCol, robotHeading);
+    return;
+  }
+  if (c == 'H') {
+    robotRow = MAP_SIZE - 1;
+    robotCol = 0;
+    robotHeading = 0;
+    poseKnown = true;
+    Serial.println("HOME SET: (8,0) facing U. Requires PHYSICAL alignment first.");
+    return;
+  }
+  if (c == '+' || c == '-') {
+    if (c == '+') motorTestMs = min(motorTestMs + MOTOR_TEST_STEP_MS,
+                                   MOTOR_TEST_MAX_MS);
+    else motorTestMs = max(motorTestMs - MOTOR_TEST_STEP_MS,
+                           MOTOR_TEST_MIN_MS);
+    Serial.printf("BENCH DURATION=%lu ms\n", motorTestMs);
+    return;
+  }
 
-  testRunning = true;
-
+  stepCount = 0;
+  if (c == 'U' || c == 'D' || c == 'L' || c == 'R') {
+    if (!poseKnown || !calibrated20) {
+      Serial.println("GRID LOCKED: verify C2, then physically align and send H");
+      return;
+    }
+    const int wanted = (c == 'U') ? 0 : (c == 'R') ? 1 :
+                       (c == 'D') ? 2 : 3;
+    const int dRow[4] = {-1, 0, 1, 0};
+    const int dCol[4] = {0, 1, 0, -1};
+    nextRow = robotRow + dRow[wanted];
+    nextCol = robotCol + dCol[wanted];
+    if (!inMap(nextRow, nextCol) || tileMap[nextRow][nextCol] == 1) {
+      Serial.println("GRID BLOCKED: outside map or tile marked blocked");
+      return;
+    }
+    const int delta = (wanted - robotHeading + 4) % 4;
+    if (((delta == 1 || delta == 2) && !calibratedRight) ||
+        (delta == 3 && !calibratedLeft)) {
+      Serial.println("GRID LOCKED: required 90-degree turn is unverified");
+      return;
+    }
+    if (delta == 1 || delta == 2)
+      addStep(TURN_RIGHT, 1, -1, turnRight90Ms);
+    if (delta == 2)
+      addStep(TURN_RIGHT, 1, -1, turnRight90Ms);
+    if (delta == 3)
+      addStep(TURN_LEFT, -1, 1, turnLeft90Ms);
+    addStep(DRIVE, 1, 1, forward20Ms, 20.0f);
+    beginPlan(GRID);
+    return;
+  }
+  if (c == '1' || c == '2') {
+    addStep(DRIVE, 1, 1, c == '1' ? forward10Ms : forward20Ms,
+            c == '1' ? 10.0f : 20.0f);
+    beginPlan(MANUAL);
+    return;
+  }
+  if (c == 'Q' || c == 'E') {
+    addStep(c == 'Q' ? TURN_LEFT : TURN_RIGHT,
+            c == 'Q' ? -1 : 1, c == 'Q' ? 1 : -1,
+            c == 'Q' ? turnLeft90Ms : turnRight90Ms);
+    beginPlan(MANUAL);
+    return;
+  }
+  if (c == 'A' || c == 'l' || c == 'S' || c == 'r' ||
+      c == 'F' || c == 'B') {
+    const int left = (c == 'A' || c == 'F') ? 1 :
+                     (c == 'l' || c == 'B') ? -1 : 0;
+    const int right = (c == 'S' || c == 'F') ? 1 :
+                      (c == 'r' || c == 'B') ? -1 : 0;
+    addStep(BENCH, left, right, motorTestMs);
+    beginPlan(BENCH_TEST);
+    return;
+  }
+  Serial.println("UNKNOWN COMMAND: send ? for calibration status");
 }
+
+void loop() {
+  static bool estopReported = false;
+  static char line[24];
+  static uint8_t length = 0;
+
+  if (!enforceMotorInterlock()) {
+    if (motionRunning || waitingForMeasurement)
+      cancelMotion("E-STOP/MOTOR FAULT: STOP; reset required");
+    if (!estopReported) {
+      Serial.println("INTERLOCK LATCHED: reset required");
+      estopReported = true;
+    }
+    while (Serial.available() > 0) Serial.read();
+    return;
+  }
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    if ((c == 'X' || c == 'x') && length == 0) {
+      cancelMotion("MANUAL X: BOTH MOTORS OFF; operation cancelled");
+      continue;
+    }
+    if (c == '\r' || c == '\n') {
+      if (length > 0) {
+        line[length] = '\0';
+        processCommand(line);
+        length = 0;
+      }
+    } else if (length < sizeof(line) - 1) {
+      line[length++] = c;
+    } else {
+      length = 0;
+      Serial.println("SERIAL INPUT TOO LONG: discarded");
+    }
+  }
+  advanceMotion();
+}
+
