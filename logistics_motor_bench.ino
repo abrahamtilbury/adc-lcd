@@ -41,6 +41,18 @@ volatile bool estopLatched = false;
 bool motorFaultLatched = false;
 bool pwmModeEnabled = false;
 const uint8_t MOTOR_TEST_DUTY = 180; // Initial bench test: 180/255 (70.6% duty)
+constexpr unsigned long MOTOR_TEST_MIN_MS = 100UL;
+constexpr unsigned long MOTOR_TEST_MAX_MS = 1000UL;
+constexpr unsigned long MOTOR_TEST_STEP_MS = 100UL;
+constexpr unsigned long MOTOR_TEST_INITIAL_MS = 500UL;
+
+static_assert(
+  MOTOR_TEST_INITIAL_MS >= MOTOR_TEST_MIN_MS &&
+  MOTOR_TEST_INITIAL_MS <= MOTOR_TEST_MAX_MS,
+  "Initial motor test duration is outside permitted limits"
+);
+
+unsigned long motorTestMs = MOTOR_TEST_INITIAL_MS;
 
 void ARDUINO_ISR_ATTR onEmergencyStop() {
   estopLatched = true;
@@ -581,13 +593,19 @@ void setup() {
   stopMotors();
  Serial.printf("PWM enabled: 1000 Hz / 8-bit / %d duty\n", MOTOR_TEST_DUTY);
 
+ Serial.println("L/l = left forward/reverse");
+ Serial.println("R/r = right forward/reverse");
+ Serial.println("F = both forward | B = both reverse");
+ Serial.println("X = stop both motors");
+ Serial.println("+/- = adjust duration by 100 ms");
 
-  Serial.println("L=left forward, l=left reverse");
-  Serial.println("R=right forward, r=right reverse, X=stop");
-  Serial.println("Each motor command runs for at most 500 ms.");
+ Serial.printf(
+  "Test duration: %lu ms | limits: %lu-%lu ms\n",
+  motorTestMs,
+  MOTOR_TEST_MIN_MS,
+  MOTOR_TEST_MAX_MS
+ );
 }
-
-
 
 /* ============================================================
    5. ULTRASONIC SENSOR FUNCTIONS
@@ -752,7 +770,6 @@ void readAllDistances(float* front, float* left, float* right,
    6. MAIN LOOP - SERIAL MOTOR BENCH TESTING
    ============================================================ */
 void loop() {
-  const unsigned long MOTOR_TEST_MS = 500UL;
   static unsigned long testStartMs = 0;
   static bool testRunning = false;
   static bool estopReported = false;
@@ -772,7 +789,7 @@ void loop() {
   // One command is allowed at a time; timeout cannot be extended.
   
   if (testRunning) {
-    if (millis() - testStartMs >= MOTOR_TEST_MS) {
+    if (millis() - testStartMs >= motorTestMs) {
       stopMotors();
       testRunning = false;
 
@@ -788,7 +805,10 @@ void loop() {
           : "WARNING - NONZERO DUTY"
       );
 
-      Serial.println("500 ms COMPLETE: MOTORS OFF");
+      Serial.printf(
+        "%lu ms COMPLETE: MOTORS OFF\n",
+        motorTestMs
+      );
       while (Serial.available() > 0) Serial.read();
     } else {
 
@@ -844,8 +864,28 @@ void loop() {
      Serial.println("RIGHT REVERSE");
      break;
 
+        case 'F':
+      setLeftMotor(1);
+      if (!enforceMotorInterlock()) return;
+
+      setRightMotor(1);
+      if (!enforceMotorInterlock()) return;
+
+      Serial.println("BOTH MOTORS FORWARD");
+      break;
+
+    case 'B':
+      setLeftMotor(-1);
+      if (!enforceMotorInterlock()) return;
+
+      setRightMotor(-1);
+      if (!enforceMotorInterlock()) return;
+
+      Serial.println("BOTH MOTORS REVERSE");
+      break;
+
     default:
-      Serial.println("UNKNOWN: use L, l, R, r or X");
+      Serial.println("UNKNOWN: use L, l, R, r, F, B, +, - or X");
       return;
   }
 
