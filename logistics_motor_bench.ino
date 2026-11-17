@@ -682,9 +682,14 @@ void cancelMotion(const char* message) {
     Serial.println("STOP PWM READBACK FAILED: RESET REQUIRED");
   }
 
-  if (motionRunning) {
-    poseKnown = false;
-  }
+    if (motionRunning ||
+         (motionPurpose == GRID && stepIndex > 0)) {
+       poseKnown = false;
+   
+       Serial.println(
+         "POSE UNKNOWN: movement interrupted; physical alignment required"
+       );
+     }
 
   motionRunning = false;
   waitingForMeasurement = false;
@@ -1005,11 +1010,14 @@ void loop() {
   }
   while (Serial.available() > 0) {
     char c = (char)Serial.read();
-        if ((c == 'X' || c == 'x') {
+           if (c == 'X' || c == 'x') {
       length = 0;
-      cancelMotion("MANUAL X: BOTH MOTORS OFF; operation cancelled");
 
-      // Discard commands already buffered after X.
+      cancelMotion(
+        "MANUAL X: BOTH MOTORS OFF; operation cancelled"
+      );
+
+      // Discard any commands already waiting in Serial.
       while (Serial.available() > 0) {
         Serial.read();
       }
