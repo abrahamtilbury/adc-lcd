@@ -84,56 +84,51 @@ void latchMotorFault() {
 }
 
 // direction: +1 forward, -1 reverse, 0 stop.
-
 void setLeftMotor(int direction) {
   stopLeftMotor();
 
    if (!enforceMotorInterlock()) return;
    if (direction != 1 && direction != -1) return;
 
-  digitalWrite(leftMotor_IN1, direction == 1 ? HIGH : LOW);
-  digitalWrite(leftMotor_IN2, direction == -1 ? HIGH : LOW);
+   digitalWrite(leftMotor_IN1, direction == 1 ? HIGH : LOW);
+   digitalWrite(leftMotor_IN2, direction == -1 ? HIGH : LOW);
 
    if (!enforceMotorInterlock()) return;
 
-  if (pwmModeEnabled) {
+   if (pwmModeEnabled) {
     if (!ledcWrite(leftMotor_PWM, MOTOR_TEST_DUTY)) {
       latchMotorFault();
       return;
     }
-  } else {
+   } else {
     digitalWrite(leftMotor_PWM, HIGH);
-  }
-  enforceMotorInterlock();
+   }
+   
+   enforceMotorInterlock();
 }
-  
+
 void setRightMotor(int direction) {
   stopRightMotor();
 
-  if (motorFaultLatched) { stopMotors(); return; }
+  if (!enforceMotorInterlock()) return;
   if (direction != 1 && direction != -1) return;
-  if (emergencyStopActive()) { stopMotors(); return; }
 
   digitalWrite(rightMotor_IN3, direction == 1 ? HIGH : LOW);
   digitalWrite(rightMotor_IN4, direction == -1 ? HIGH : LOW);
 
-  if (emergencyStopActive() || motorFaultLatched) {
-    stopMotors();
-    return;
-  }
+  if (!enforceMotorInterlock()) return;
 
   if (pwmModeEnabled) {
     if (!ledcWrite(rightMotor_PWM, MOTOR_TEST_DUTY)) {
       latchMotorFault();
       return;
     }
-
   } else {
     digitalWrite(rightMotor_PWM, HIGH);
   }
+
   enforceMotorInterlock();
 }
-
 
 /* ============================================================
    3. GRID MAP - INITIALISATION AND SERIAL DISPLAY
@@ -672,7 +667,16 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
 void readAllDistances(float* front, float* left, float* right,
                       bool* frontCloseSample) {
 
+  *front = -1.0f;
+  *left = -1.0f;
+  *right = -1.0f;
+
+  if (frontCloseSample != nullptr) {
+    *frontCloseSample = false;
+  }
+
   float nearestFrontSampleCm = -1.0f;
+
 
   *front = readFilteredDistanceCm(
       senseFront_PIN_TRIG,
