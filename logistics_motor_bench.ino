@@ -306,6 +306,8 @@ void setup() {
   Serial.println("BENCH: A/l left, S/r right, F/B both");
   Serial.println("CONTROL: +/- duration, X stop, ? status");
   Serial.println("SERIAL: 115200 baud, Newline ending");
+  Serial.println("AUTO: N = choose one tile | Z = keep exploring");
+  Serial.println("MAP: M = show tile states (-1/0/1)");
 
   Serial.printf(
     "Bench duration: %lu ms | Limits: %lu-%lu ms\n",
@@ -705,7 +707,6 @@ void advanceMotion() {
       "ESTIMATED GRID POSE: X=%d,Y=%d, heading=%d\n",
       robotCol, robotRow, robotHeading
     );
-  }
   } else if (motionPurpose == CALIBRATE) {
     waitingForMeasurement = true;
     poseKnown = false;
@@ -891,21 +892,22 @@ void processCommand(const char* command) {
   }
   if (c == 'H') {
     initialiseMap();
-     robotRow = MAP_SIZE - 1;
+    robotRow = MAP_SIZE - 1;
     robotCol = 0;
     robotHeading = 0;
     poseKnown = true;
     Serial.println(
       "HOME SET: X=0,Y=8 facing U. Fresh map; align physically first."
     );
+
+    return;
+  }
   if (c == '+' || c == '-') {
     if (c == '+') motorTestMs = min(motorTestMs + MOTOR_TEST_STEP_MS,
                                    MOTOR_TEST_MAX_MS);
     else motorTestMs = max(motorTestMs - MOTOR_TEST_STEP_MS,
                            MOTOR_TEST_MIN_MS);
     Serial.printf("BENCH DURATION=%lu ms\n", motorTestMs);
-    Serial.println("AUTO: N = choose one tile | Z = keep exploring");
-    Serial.println("MAP: M = show tile states (-1/0/1)");
     return;
   }
 
