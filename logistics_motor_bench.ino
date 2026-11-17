@@ -71,6 +71,16 @@ void stopMotors() {
 }
 
 
+bool movementPermitted() {
+  return !emergencyStopActive() && !motorFaultLatched;
+}
+
+bool enforceMotorInterlock() {
+  if (movementPermitted()) return true;
+  stopMotors();
+  return false;
+}
+
 void latchMotorFault() {
   motorFaultLatched = true;
   stopMotors();
@@ -82,17 +92,13 @@ void latchMotorFault() {
 void setLeftMotor(int direction) {
   stopLeftMotor();
 
-  if (motorFaultLatched) { stopMotors(); return; }
-  if (direction != 1 && direction != -1) return;
-  if (emergencyStopActive()) { stopMotors(); return; }
+   if (!enforceMotorInterlock()) return;
+   if (direction != 1 && direction != -1) return;
 
   digitalWrite(leftMotor_IN1, direction == 1 ? HIGH : LOW);
   digitalWrite(leftMotor_IN2, direction == -1 ? HIGH : LOW);
 
-  if (emergencyStopActive() || motorFaultLatched) {
-    stopMotors();
-    return;
-  }
+   if (!enforceMotorInterlock()) return;
 
   if (pwmModeEnabled) {
     if (!ledcWrite(leftMotor_PWM, MOTOR_TEST_DUTY)) {
@@ -102,6 +108,7 @@ void setLeftMotor(int direction) {
   } else {
     digitalWrite(leftMotor_PWM, HIGH);
   }
+  enforceMotorInterlock();
 }
   
 void setRightMotor(int direction) {
@@ -124,10 +131,13 @@ void setRightMotor(int direction) {
       latchMotorFault();
       return;
     }
+
   } else {
     digitalWrite(rightMotor_PWM, HIGH);
   }
+  enforceMotorInterlock();
 }
+
 
 /* ============================================================
    3. GRID MAP - INITIALISATION AND SERIAL DISPLAY
@@ -241,14 +251,11 @@ bool chooseTile(int& targetRow, int& targetCol) {
 void moveTile() {
   int targetRow;
   int targetCol;
-
-  if (estopLatched ||
-      digitalRead(ESTOP_PIN) == LOW) {
-    estopLatched = true;
-    stopMotors();
-    Serial.println("MOVE TILE BLOCKED: E-STOP");
-    return;
-  }
+  
+   if (!enforceMotorInterlock()) {
+     Serial.println("MOVE TILE BLOCKED: E-STOP OR MOTOR FAULT");
+     return;
+   }
 
   if (!chooseTile(targetRow, targetCol)) {
     Serial.println(
@@ -518,13 +525,11 @@ void setup() {
   pinMode(rightMotor_PWM, OUTPUT);
   pinMode(ESTOP_PIN, INPUT_PULLUP);
   
-  
-  
   stopMotors();
   initialiseMap();
 
-  // Latch a pressed E-stop before accepting any command.
-  if (digitalRead(ESTOP_PIN) == LOW) estopLatched = true;
+   // Latch a pressed E-stop before accepting any command.
+   emergencyStopActive();
   attachInterrupt(digitalPinToInterrupt(ESTOP_PIN),
                   onEmergencyStop, FALLING);
 
@@ -541,7 +546,7 @@ void setup() {
   if (!leftPwmReady || !rightPwmReady) {
     if (leftPwmReady) ledcDetach(leftMotor_PWM);
     if (rightPwmReady) ledcDetach(rightMotor_PWM);
-    estopLatched = true;  // Fail closed; reset required.
+    motorFaultLatched = true;  // Fail closed; reset required.
     stopMotors();
     Serial.println("PWM INIT FAILED: TEST LOCKED");
     return;
@@ -625,11 +630,7 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
   int validCount = 0;
 
   for (int i = 0; i < SAMPLE_COUNT; i++) {
-    if (estopLatched || digitalRead(ESTOP_PIN) == LOW) {
-      estopLatched = true;
-      return -1.0f;
-    }
-
+   if (!enforceMotorInterlock()) return -1.0f;
     float cm = readDistanceCm(trigPin, echoPin);
 
     if (cm >= 0.0f) {
@@ -685,7 +686,7 @@ void readAllDistances(float* front, float* left, float* right,
       frontCloseSample
   );
 
-  if (estopLatched) return;
+  if (!enforceMotorInterlock()) return;
   delay(SENSOR_GAP_MS);
 
   *left = readFilteredDistanceCm(
@@ -693,7 +694,8 @@ void readAllDistances(float* front, float* left, float* right,
       senseLeft_PIN_ECHO
   );
 
-  if (estopLatched) return;
+  
+  if (!enforceMotorInterlock()) return;
   delay(SENSOR_GAP_MS);
 
   *right = readFilteredDistanceCm(
@@ -713,24 +715,17 @@ void loop() {
   static bool testRunning = false;
   static bool estopReported = false;
 
+   if (!enforceMotorInterlock()) {
+     testRunning = false;
    
-if (motorFaultLatched) {
-  stopMotors();
-  testRunning = false;
-  while (Serial.available() > 0) Serial.read();
-  return;
-}
+     if (emergencyStopActive() && !estopReported) {
+       Serial.println("E-STOP LATCHED: MOTORS OFF; reset required.");
+       estopReported = true;
+     }
    
-  if (emergencyStopActive()) {
-    stopMotors();
-    testRunning = false;
-    if (!estopReported) {
-      Serial.println("E-STOP LATCHED: MOTORS OFF; reset required.");
-      estopReported = true;
-    }
-    while (Serial.available() > 0) Serial.read();
-    return;
-  }
+     while (Serial.available() > 0) Serial.read();
+     return;
+   }
 
   // One command is allowed at a time; timeout cannot be extended.
   if (testRunning) {
@@ -764,25 +759,25 @@ if (motorFaultLatched) {
   switch (command) { 
    case 'L':
      setLeftMotor(1);
-     if (motorFaultLatched) return;
+     if (!enforceMotorInterlock()) return;
      Serial.println("LEFT FORWARD");
      break;
    
    case 'l':
      setLeftMotor(-1);
-     if (motorFaultLatched) return;
+     if (!enforceMotorInterlock()) return;
      Serial.println("LEFT REVERSE");
      break;
    
    case 'R':
      setRightMotor(1);
-     if (motorFaultLatched) return;
+     if (!enforceMotorInterlock()) return;
      Serial.println("RIGHT FORWARD");
      break;
    
    case 'r':
      setRightMotor(-1);
-     if (motorFaultLatched) return;
+     if (!enforceMotorInterlock()) return;
      Serial.println("RIGHT REVERSE");
      break;
 
@@ -791,10 +786,8 @@ if (motorFaultLatched) {
       return;
   }
 
-  if (emergencyStopActive()) {
-    stopMotors();
-    return;
-  }
+  if (!enforceMotorInterlock()) return;
+
   testStartMs = millis();
   testRunning = true;
 }
