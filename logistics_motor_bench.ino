@@ -4,7 +4,6 @@
 /* ============================================================
    1. CONFIGURATION - PIN ASSIGNMENTS / SENSOR LIMITS
    ============================================================ */
-
 const int senseLeft_PIN_TRIG = 22;
 const int senseLeft_PIN_ECHO = 33;
 const int senseFront_PIN_TRIG  = 23;
@@ -12,23 +11,20 @@ const int senseFront_PIN_ECHO  = 34;
 const int senseRight_PIN_TRIG  = 21;
 const int senseRight_PIN_ECHO  = 32;
 const int ESTOP_PIN = 25;
-
 const int leftMotor_PWM  = 18;      // L298N ENA
 const int rightMotor_PWM  = 19;     // L298N ENB
 const int leftMotor_IN1  = 26;      // L298N IN1
 const int leftMotor_IN2  = 27;      // L298N IN2
 const int rightMotor_IN3  = 14;     // L298N IN3
 const int rightMotor_IN4  = 13;     // L298N IN4
-
 const unsigned long SENSOR_GAP_MS = 65;          // Wait at least 65 milliseconds between ultrasonic trigger pulses
 const unsigned long ECHO_TIMEOUT_US = 25000UL;   // Stop waiting for an ECHO after 25,000 microseconds (25 ms)
 const float SENSOR_MIN_CM = 2.0f;        // Minimum accepted measurement: 2 cm
 const float SENSOR_MAX_CM = 400.0f;      // Maximum accepted measurement: 400 cm
-
 const float FRONT_OBSTACLE_CM = 20.0f;
+
 // Provisional obstacle-detection threshold, not a verified stopping distance.
 // Reassess after measuring motor stopping performance.
-
 // Minimum 1000 ms between scan starts.
 // Not a guaranteed one-second reporting rate.
 // Blocking sensor measurements can exceed this interval.
@@ -142,11 +138,7 @@ void setRightMotor(int direction) {
 /* ============================================================
    3. GRID MAP - INITIALISATION AND SERIAL DISPLAY
    ============================================================ */
-const int MAP_SIZE = 9;
 int8_t tileMap[MAP_SIZE][MAP_SIZE];
-
-// Navigation configuration
-const int TILE_LENGTH_CM = 20;
 
 // Robot's provisional grid position
 int robotRow = MAP_SIZE - 1;
@@ -616,14 +608,14 @@ bool isFrontBlocked(float distanceCm) {
 // Five samples per sensor; at least three must be valid.
 // Report the median of valid samples.
 // With four valid samples, use the lower-middle value.
-// Conservative safety override: a nearest valid sample
-// <= 20 cm triggers a separate close-obstacle warning.
-// The warning does not alter the reported median.
+// Optional output provides nearest valid sample, independent
+// of whether enough readings exist to calculate a median.
+// Obstacle classification happens in readAllDistances().
 
 float readFilteredDistanceCm(int trigPin, int echoPin,
-                             bool* closeSampleDetected = nullptr) {
-  if (closeSampleDetected != nullptr) {
-    *closeSampleDetected = false;
+                             float* nearestValidSampleCm = nullptr) {
+  if (nearestValidSampleCm != nullptr) {
+    *nearestValidSampleCm = -1.0f;
   }
   const int SAMPLE_COUNT = 5;
   const int MIN_VALID = 3;
@@ -636,14 +628,14 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
     float cm = readDistanceCm(trigPin, echoPin);
 
    if (cm >= 0.0f) {
-     validSamples[validCount] = cm;
-     validCount++;
-   
-     if (closeSampleDetected != nullptr &&
-         cm <= FRONT_OBSTACLE_CM) {
-       *closeSampleDetected = true;
-     }
-   }
+      validSamples[validCount++] = cm;
+
+      if (nearestValidSampleCm != nullptr &&
+          (*nearestValidSampleCm < 0.0f ||
+           cm < *nearestValidSampleCm)) {
+        *nearestValidSampleCm = cm;
+      }
+    }
 
     if (i < SAMPLE_COUNT - 1) {
       delay(SENSOR_GAP_MS);
@@ -674,16 +666,29 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
   return validSamples[(validCount - 1) / 2];
 }
 
+// Invalid readings and close obstacles are not clear paths.
+bool isFrontBlocked(float distanceCm) {
+  return distanceCm < 0.0f ||
+         distanceCm <= FRONT_OBSTACLE_CM;
+}
 // Update the caller's front, left and right distances.
 // Separately report whether a front sample was too close.
 void readAllDistances(float* front, float* left, float* right,
                       bool* frontCloseSample) {
 
+  float nearestFrontSampleCm = -1.0f;
+
   *front = readFilteredDistanceCm(
       senseFront_PIN_TRIG,
       senseFront_PIN_ECHO,
-      frontCloseSample
+      &nearestFrontSampleCm
   );
+
+  if (frontCloseSample != nullptr) {
+    *frontCloseSample =
+        nearestFrontSampleCm >= 0.0f &&
+        isFrontBlocked(nearestFrontSampleCm);
+  }
 
   if (!enforceMotorInterlock()) return;
   delay(SENSOR_GAP_MS);
