@@ -185,12 +185,24 @@ int robotCol = 0;
 float tileClearanceCm[MAP_SIZE][MAP_SIZE] = {};
 uint8_t tileObstacleSamples[MAP_SIZE][MAP_SIZE] = {};
 
-// Preliminary motor timing calibration
-// Zero means not calibrated.
-unsigned long turnRight90Ms = 0;
-unsigned long turnLeft90Ms = 0;
-unsigned long forward20Ms = 0;
-unsigned long reverse10Ms = 0;
+// Provisional timings (calibrated through C1, C2, CQ, CE).
+constexpr unsigned long MOTION_MIN_MS = 50UL;
+constexpr unsigned long MOTION_MAX_MS = 4000UL;
+constexpr float CALIBRATION_CLEARANCE_CM = 150.0f;
+
+unsigned long forward10Ms = 1000UL;
+unsigned long forward20Ms = 2000UL;
+unsigned long turnLeft90Ms = 500UL;
+unsigned long turnRight90Ms = 500UL;
+
+bool calibrated10 = false;
+bool calibrated20 = false;
+bool calibratedLeft = false;
+bool calibratedRight = false;
+
+// 0=up, 1=right, 2=down, 3=left.
+int robotHeading = 0;
+bool poseKnown = false;
 
 void initialiseMap() {
   for (int row = 0; row < MAP_SIZE; row++) {
@@ -303,143 +315,6 @@ void moveTile() {
 
   // Do not update the robot's coordinates
   // until actual movement is confirmed.
-}
-
-/* ============================================================
-   3.2 MOVEMENT CALIBRATION
-   ============================================================ */
-
-// Calculate preliminary durations for 90-degree turns.
-// Supply actual measurements from separate right and
-// left turn tests. Does not operate the motors.
-
-void calibrateAngle(
-    float measuredRightDegrees,
-    unsigned long rightTestMs,
-    float measuredLeftDegrees,
-    unsigned long leftTestMs) {
-
-  if (measuredRightDegrees <= 0 ||
-      measuredLeftDegrees <= 0 ||
-      rightTestMs == 0 ||
-      leftTestMs == 0) {
-
-    Serial.println(
-        "ANGLE CALIBRATION: INVALID MEASUREMENTS"
-    );
-    return;
-  }
-
-  turnRight90Ms = (unsigned long)(
-      90.0f * rightTestMs /
-      measuredRightDegrees + 0.5f
-  );
-
-  turnLeft90Ms = (unsigned long)(
-      90.0f * leftTestMs /
-      measuredLeftDegrees + 0.5f
-  );
-
-  Serial.printf(
-      "INITIAL TURN ESTIMATES: RIGHT=%lu ms LEFT=%lu ms\n",
-      turnRight90Ms, turnLeft90Ms
-  );
-
-  Serial.println(
-      "Verify both turns before enabling movement."
-  );
-}
-
-// Calculate preliminary 20 cm forward and
-// 10 cm reverse travel durations.
-// Supply physically measured test results.
-
-void calibrateDistance(
-    float measuredForwardCm,
-    unsigned long forwardTestMs,
-    float measuredReverseCm,
-    unsigned long reverseTestMs) {
-
-  if (measuredForwardCm <= 0 ||
-      measuredReverseCm <= 0 ||
-      forwardTestMs == 0 ||
-      reverseTestMs == 0) {
-
-    Serial.println(
-        "DISTANCE CALIBRATION: INVALID MEASUREMENTS"
-    );
-    return;
-  }
-
-  forward20Ms = (unsigned long)(
-      20.0f * forwardTestMs /
-      measuredForwardCm + 0.5f
-  );
-
-  reverse10Ms = (unsigned long)(
-      10.0f * reverseTestMs /
-      measuredReverseCm + 0.5f
-  );
-
-  Serial.printf(
-      "INITIAL DISTANCE ESTIMATES: FWD20=%lu ms REV10=%lu ms\n",
-      forward20Ms, reverse10Ms
-  );
-
-  Serial.println(
-      "Verify both distances before enabling movement."
-  );
-}
-
-/* ============================================================
-   3.3 FULL ROTATION SWEEP
-   ============================================================ */
-
-void sweep360() {
-  stopMotors();
-
-  Serial.println("SWEEP 360: PLANNING ONLY");
-
-  Serial.println(
-      "Step 1: Reverse 10 cm after checking rear clearance"
-  );
-
-  Serial.println(
-      "Step 2: Scan at starting heading"
-  );
-
-  Serial.println(
-      "Step 3: Rotate RIGHT 90 degrees and scan"
-  );
-
-  Serial.println(
-      "Step 4: Rotate RIGHT 90 degrees and scan"
-  );
-
-  Serial.println(
-      "Step 5: Rotate RIGHT 90 degrees and scan"
-  );
-
-  Serial.println(
-      "Step 6: Rotate RIGHT 90 degrees to original heading"
-  );
-
-  if (reverse10Ms == 0 ||
-      turnRight90Ms == 0) {
-
-    Serial.println(
-        "SWEEP NOT READY: Missing calibration"
-    );
-    return;
-  }
-
-  Serial.println(
-      "Calibration estimates available."
-  );
-
-  Serial.println(
-      "Motor execution and map updates not implemented."
-  );
 }
 
 /* ============================================================
@@ -593,11 +468,20 @@ void setup() {
   stopMotors();
  Serial.printf("PWM enabled: 1000 Hz / 8-bit / %d duty\n", MOTOR_TEST_DUTY);
 
- Serial.println("L/l = left forward/reverse");
- Serial.println("R/r = right forward/reverse");
- Serial.println("F = both forward | B = both reverse");
- Serial.println("X = stop both motors");
- Serial.println("+/- = adjust duration by 100 ms");
+Serial.println("GRID: U/D/L/R = one 20cm tile");
+Serial.println("TURNS: Q = left 90, E = right 90");
+Serial.println("DISTANCE: 1 = 10cm, 2 = 20cm");
+Serial.println("CALIBRATE: C1, C2, CQ, CE");
+Serial.println("HOME: H = reset pose after physical alignment");
+Serial.println("BENCH: A/l left, S/r right, F/B both");
+Serial.println("+/- bench duration; X stop; ? status");
+Serial.println("Serial Monitor line ending: NEWLINE");
+
+Serial.printf(
+  "Bench: %lu ms | Maximum movement: %lu ms\n",
+  motorTestMs,
+  MOTION_MAX_MS
+);
 
  Serial.printf(
   "Test duration: %lu ms | limits: %lu-%lu ms\n",
