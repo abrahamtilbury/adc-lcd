@@ -138,6 +138,7 @@ void setRightMotor(int direction) {
 /* ============================================================
    3. GRID MAP - INITIALISATION AND SERIAL DISPLAY
    ============================================================ */
+constexpr int MAP_SIZE = 9;
 int8_t tileMap[MAP_SIZE][MAP_SIZE];
 
 // Robot's provisional grid position
@@ -666,11 +667,6 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
   return validSamples[(validCount - 1) / 2];
 }
 
-// Invalid readings and close obstacles are not clear paths.
-bool isFrontBlocked(float distanceCm) {
-  return distanceCm < 0.0f ||
-         distanceCm <= FRONT_OBSTACLE_CM;
-}
 // Update the caller's front, left and right distances.
 // Separately report whether a front sample was too close.
 void readAllDistances(float* front, float* left, float* right,
