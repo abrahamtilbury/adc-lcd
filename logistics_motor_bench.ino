@@ -946,7 +946,12 @@ void processCommand(const char* command) {
     return;
   }
   if (c == 'Q' || c == 'E') {
-    addStep(c == 'Q' ? TURN_LEFT : TURN_RIGHT,
+    if ((c == 'Q' && !calibratedLeft) ||
+       (c == 'E' && !calibratedRight)) {
+     poseKnown = false;
+     Serial.println("POSE UNKNOWN: turn not calibrated");
+   }
+     addStep(c == 'Q' ? TURN_LEFT : TURN_RIGHT,
             c == 'Q' ? -1 : 1, c == 'Q' ? 1 : -1,
             c == 'Q' ? turnLeft90Ms : turnRight90Ms);
     beginPlan(MANUAL);
@@ -982,10 +987,12 @@ void loop() {
   }
   while (Serial.available() > 0) {
     char c = (char)Serial.read();
-    if ((c == 'X' || c == 'x') && length == 0) {
-      cancelMotion("MANUAL X: BOTH MOTORS OFF; operation cancelled");
-      continue;
-    }
+    if ((c == 'X' || c == 'x') &&
+       (motionRunning || waitingForMeasurement || length == 0)) {
+     length = 0;
+     cancelMotion("MANUAL X: BOTH MOTORS OFF; operation cancelled");
+     continue;
+   }
     if (c == '\r' || c == '\n') {
       if (length > 0) {
         line[length] = '\0';
@@ -1000,5 +1007,6 @@ void loop() {
     }
   }
   advanceMotion();
+  tileMap[robotRow][robotCol] = 0;
 }
 
