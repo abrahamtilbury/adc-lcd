@@ -118,17 +118,21 @@ void setLeftMotor(int direction) {
 
     const uint32_t actualDuty = ledcRead(leftMotor_PWM);
 
-    Serial.printf(
+      Serial.printf(
       "LEFT PWM: requested=%u readback=%lu | %s\n",
       (unsigned)MOTOR_TEST_DUTY,
       (unsigned long)actualDuty,
       actualDuty == MOTOR_TEST_DUTY ? "OK" : "MISMATCH"
     );
 
+    if (actualDuty != MOTOR_TEST_DUTY) {
+      latchMotorFault();
+      return;
+    }
+
   } else {
     digitalWrite(leftMotor_PWM, HIGH);
   }
-
    
    enforceMotorInterlock();
 }
@@ -153,17 +157,21 @@ void setRightMotor(int direction) {
 
     const uint32_t actualDuty = ledcRead(rightMotor_PWM);
 
-    Serial.printf(
+     Serial.printf(
       "RIGHT PWM: requested=%u readback=%lu | %s\n",
       (unsigned)MOTOR_TEST_DUTY,
       (unsigned long)actualDuty,
       actualDuty == MOTOR_TEST_DUTY ? "OK" : "MISMATCH"
     );
 
+    if (actualDuty != MOTOR_TEST_DUTY) {
+      latchMotorFault();
+      return;
+    }
+
   } else {
     digitalWrite(rightMotor_PWM, HIGH);
   }
-
 
   enforceMotorInterlock();
 }
