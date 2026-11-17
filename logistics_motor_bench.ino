@@ -673,12 +673,25 @@ int nextRow = 0, nextCol = 0;
 
 void cancelMotion(const char* message) {
   stopMotors();
-  if (motionRunning) poseKnown = false;  // Partial movement: pose unknown.
+
+  // Check commanded PWM duty after shutdown.
+  if (pwmModeEnabled &&
+      (ledcRead(leftMotor_PWM) != 0 ||
+       ledcRead(rightMotor_PWM) != 0)) {
+    motorFaultLatched = true;
+    Serial.println("STOP PWM READBACK FAILED: RESET REQUIRED");
+  }
+
+  if (motionRunning) {
+    poseKnown = false;
+  }
+
   motionRunning = false;
   waitingForMeasurement = false;
   motionPurpose = NONE;
   stepCount = 0;
   calibrationKind = 0;
+
   Serial.println(message);
 }
 
@@ -791,9 +804,14 @@ void advanceMotion() {
     return;
   }
 
-  if (motionPurpose == GRID && poseKnown) {
+    if (motionPurpose == GRID && poseKnown) {
     robotRow = nextRow;
     robotCol = nextCol;
+
+    // Mark the estimated destination as visited only
+    // after the complete grid movement finishes.
+    tileMap[robotRow][robotCol] = 0;
+
     Serial.printf("ESTIMATED GRID POSE: (%d,%d), heading=%d\n",
                   robotRow, robotCol, robotHeading);
   } else if (motionPurpose == CALIBRATE) {
@@ -987,12 +1005,18 @@ void loop() {
   }
   while (Serial.available() > 0) {
     char c = (char)Serial.read();
-    if ((c == 'X' || c == 'x') &&
-       (motionRunning || waitingForMeasurement || length == 0)) {
-     length = 0;
-     cancelMotion("MANUAL X: BOTH MOTORS OFF; operation cancelled");
-     continue;
-   }
+        if ((c == 'X' || c == 'x') &&
+        (motionRunning || waitingForMeasurement || length == 0)) {
+      length = 0;
+      cancelMotion("MANUAL X: BOTH MOTORS OFF; operation cancelled");
+
+      // Discard commands already buffered after X.
+      while (Serial.available() > 0) {
+        Serial.read();
+      }
+
+      return;
+    }
     if (c == '\r' || c == '\n') {
       if (length > 0) {
         line[length] = '\0';
@@ -1007,6 +1031,5 @@ void loop() {
     }
   }
   advanceMotion();
-  tileMap[robotRow][robotCol] = 0;
 }
 
