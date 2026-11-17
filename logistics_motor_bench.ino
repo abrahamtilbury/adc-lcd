@@ -93,7 +93,6 @@ void latchMotorFault() {
 // direction: +1 forward, -1 reverse, 0 stop.
 void setLeftMotor(int direction) {
    stopLeftMotor();
-
    if (!enforceMotorInterlock()) return;
    if (direction != 1 && direction != -1) return;
    
@@ -381,15 +380,15 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
   int validCount = 0;
 
   for (int i = 0; i < SAMPLE_COUNT; i++) {
-   if (!enforceMotorInterlock()) return -1.0f;
+    if (!enforceMotorInterlock()) return -1.0f;
     float cm = readDistanceCm(trigPin, echoPin);
 
-   if (cm >= 0.0f) {
-      validSamples[validCount++] = cm;
+  if (cm >= 0.0f) {
+    validSamples[validCount++] = cm;
 
-      if (nearestValidSampleCm != nullptr &&
-        (*nearestValidSampleCm < 0.0f ||
-          cm < *nearestValidSampleCm)) {
+  if (nearestValidSampleCm != nullptr &&
+    (*nearestValidSampleCm < 0.0f ||
+       cm < *nearestValidSampleCm)) {
         *nearestValidSampleCm = cm;
       }
     }
@@ -505,7 +504,7 @@ void cancelMotion(const char* message) {
     Serial.println("STOP PWM READBACK FAILED: RESET REQUIRED");
   }
 
-      if (motionRunning ||
+  if (motionRunning ||
       (motionPurpose == GRID && stepIndex > 0)) {
     poseKnown = false;
 
