@@ -36,7 +36,7 @@ const unsigned long SENSOR_REPORT_MS = 1000UL;
 volatile bool estopLatched = false;
 bool motorFaultLatched = false;
 bool pwmModeEnabled = false;
-const uint8_t MOTOR_TEST_DUTY = 180; // Initial bench test: 180/255 (50.2% duty)
+const uint8_t MOTOR_TEST_DUTY = 180; // Initial bench test: 180/255 (70.6% duty)
 
 void ARDUINO_ISR_ATTR onEmergencyStop() {
   estopLatched = true;
