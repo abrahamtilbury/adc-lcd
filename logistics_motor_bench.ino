@@ -93,9 +93,9 @@ void setLeftMotor(int direction) {
 
    if (!enforceMotorInterlock()) return;
    if (direction != 1 && direction != -1) return;
-
-   digitalWrite(leftMotor_IN1, direction == 1 ? HIGH : LOW);
-   digitalWrite(leftMotor_IN2, direction == -1 ? HIGH : LOW);
+   
+   digitalWrite(leftMotor_IN1, direction == -1 ? HIGH : LOW);
+   digitalWrite(leftMotor_IN2, direction == 1 ? HIGH : LOW);
 
    if (!enforceMotorInterlock()) return;
 
