@@ -27,11 +27,6 @@ const float SENSOR_MIN_CM = 2.0f;        // Minimum accepted measurement: 2 cm
 const float SENSOR_MAX_CM = 400.0f;      // Maximum accepted measurement: 400 cm
 const float FRONT_OBSTACLE_CM = 20.0f;
 
-// obstacle-detection threshold
-// 1000 ms between scan starts.
-// Blocking sensor measurements can exceed this interval.
-const unsigned long SENSOR_REPORT_MS = 1000UL;
-
 /* ============================================================
    2. MOTOR CONTROL AND EMERGENCY STOP
    ============================================================ */
@@ -186,11 +181,6 @@ int8_t tileMap[MAP_SIZE][MAP_SIZE];
 int robotRow = MAP_SIZE - 1;
 int robotCol = 0;
 
-// Map evidence
-// Clearance 0 means no measurement recorded.
-float tileClearanceCm[MAP_SIZE][MAP_SIZE] = {};
-uint8_t tileObstacleSamples[MAP_SIZE][MAP_SIZE] = {};
-
 // Provisional timings (calibrated through C1, C2, CQ, CE).
 constexpr unsigned long MOTION_MIN_MS = 50UL;
 constexpr unsigned long MOTION_MAX_MS = 4000UL;
@@ -231,187 +221,12 @@ void printMap() {
 }
 
 /* ============================================================
-   3.1 TILE SELECTION AND MOVEMENT PLANNING
+   3.1 MAP BOUNDS CHECK
    ============================================================ */
 
 bool inMap(int row, int col) {
   return row >= 0 && row < MAP_SIZE &&
          col >= 0 && col < MAP_SIZE;
-}
-
-// Select an adjacent candidate tile.
-// Priority:
-// 1. Unexplored tile
-// 2. Greatest recorded obstacle clearance
-// 3. Fewest obstacle observations
-// tileMap: -1 unknown, 0 visited, 1 blocked.
-
-bool chooseTile(int& targetRow, int& targetCol) {
-  const int dRow[4] = {-1, 0, 1, 0};
-  const int dCol[4] = {0, 1, 0, -1};
-
-  bool found = false;
-  int bestUnknown = -1;
-  float bestClearance = -1.0f;
-  int bestDataCount = 256;
-
-  for (int d = 0; d < 4; d++) {
-    int row = robotRow + dRow[d];
-    int col = robotCol + dCol[d];
-
-    if (!inMap(row, col) ||
-        tileMap[row][col] == 1) {
-      continue;
-    }
-
-    int unknown =
-        (tileMap[row][col] == -1) ? 1 : 0;
-
-    float clearance = tileClearanceCm[row][col];
-    int dataCount = tileObstacleSamples[row][col];
-
-    if (!found ||
-        unknown > bestUnknown ||
-        (unknown == bestUnknown &&
-         clearance > bestClearance) ||
-        (unknown == bestUnknown &&
-         clearance == bestClearance &&
-         dataCount < bestDataCount)) {
-
-      found = true;
-      bestUnknown = unknown;
-      bestClearance = clearance;
-      bestDataCount = dataCount;
-
-      targetRow = row;
-      targetCol = col;
-    }
-  }
-
-  return found;
-}
-
-// Plan a single 20 cm tile movement.
-// Motor actuation deliberately disabled.
-
-void moveTile() {
-  int targetRow;
-  int targetCol;
-  
-   if (!enforceMotorInterlock()) {
-     Serial.println("MOVE TILE BLOCKED: E-STOP OR MOTOR FAULT");
-     return;
-   }
-
-  if (!chooseTile(targetRow, targetCol)) {
-    Serial.println(
-        "MOVE TILE: NO ADJACENT CANDIDATE"
-    );
-    return;
-  }
-
-  Serial.printf(
-      "PLAN ONLY: 20 cm tile (%d,%d) -> (%d,%d)\n",
-      robotRow, robotCol, targetRow, targetCol
-  );
-
-  Serial.println(
-      "No motor command. Path safety unverified."
-  );
-
-  // Do not update the robot's coordinates
-  // until actual movement is confirmed.
-}
-
-/* ============================================================
-   3.4 SNAKE COVERAGE PATTERN
-   ============================================================ */
-
-// Generate row-by-row coverage order.
-// Begin at bottom-left.
-// Alternate travel direction on each row.
-// Planning only; obstacles are not yet routed around.
-
-void snake() {
-  Serial.println(
-      "SNAKE COVERAGE ORDER:"
-  );
-
-  for (int row = MAP_SIZE - 1; row >= 0; row--) {
-
-    bool leftToRight =
-        ((MAP_SIZE - 1 - row) % 2 == 0);
-
-    for (int i = 0; i < MAP_SIZE; i++) {
-
-      int col = leftToRight ?
-          i : MAP_SIZE - 1 - i;
-
-      Serial.printf(
-          "(%d,%d) ", row, col
-      );
-    }
-
-    Serial.println();
-  }
-}
-
-/* ============================================================
-   3.5 CENTRE SPIRAL COVERAGE
-   ============================================================ */
-
-// Generate outward spiral tile order.
-// Assumes the robot begins at the centre.
-// Planning only; does not execute movement.
-
-void centreSpiral() {
-  Serial.println(
-      "CENTRE SPIRAL COVERAGE ORDER:"
-  );
-
-  int row = MAP_SIZE / 2;
-  int col = MAP_SIZE / 2;
-
-  Serial.printf("(%d,%d) ", row, col);
-
-  const int dRow[4] = {0, 1, 0, -1};
-  const int dCol[4] = {1, 0, -1, 0};
-
-  int stepLength = 1;
-  int printed = 1;
-
-  for (int leg = 0;
-       printed < MAP_SIZE * MAP_SIZE;
-       leg++) {
-
-    int direction = leg % 4;
-
-    for (int step = 0;
-         step < stepLength;
-         step++) {
-
-      row += dRow[direction];
-      col += dCol[direction];
-
-      if (inMap(row, col)) {
-        Serial.printf(
-            "(%d,%d) ", row, col
-        );
-
-        printed++;
-
-        if (printed == MAP_SIZE * MAP_SIZE) {
-          break;
-        }
-      }
-    }
-
-    if (leg % 2 == 1) {
-      stepLength++;
-    }
-  }
-
-  Serial.println();
 }
 
 /* ============================================================
