@@ -1,5 +1,26 @@
+#define BLYNK_TEMPLATE_ID "TMPL_REPLACE_ME"
+#define BLYNK_TEMPLATE_NAME "Logistics Bot"
+#define BLYNK_AUTH_TOKEN "REPLACE_WITH_DEVICE_TOKEN"
+
+#include <WiFi.h>
+#include <BlynkSimpleEsp32.h>
 #include <math.h>
 #include <stdlib.h>
+
+const char WIFI_SSID[] = "REPLACE_WITH_WIFI_NAME";
+const char WIFI_PASSWORD[] = "REPLACE_WITH_WIFI_PASSWORD";
+
+// Keep remote movement locked until safety tests pass.
+constexpr bool ENABLE_BLYNK_MOVEMENT = false;
+
+constexpr unsigned long BLYNK_RECONNECT_MS = 5000UL;
+
+BlynkTimer blynkTimer;
+
+bool remoteStopLatched = false;
+bool remoteMotionActive = false;
+
+void publishBlynkTelemetry();
 
 // LOGISTICS BOT - ESP32 / L298N / 3x HC-SR04 / E-STOP
 // SERIAL: 115200 BAUD
@@ -73,9 +94,10 @@ void stopMotors() {
   stopRightMotor();
 }
 
-
 bool movementPermitted() {
-  return !emergencyStopActive() && !motorFaultLatched;
+  return !emergencyStopActive() &&
+         !motorFaultLatched &&
+         !remoteStopLatched;
 }
 
 bool enforceMotorInterlock() {
@@ -320,6 +342,23 @@ void setup() {
     "Maximum movement duration: %lu ms\n",
     MOTION_MAX_MS
   );
+  WiFi.mode(WIFI_STA);
+
+  WiFi.setAutoReconnect(true);
+
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  Blynk.config(BLYNK_AUTH_TOKEN);
+
+  Blynk.disconnect();
+
+  blynkTimer.setInterval(2000L, publishBlynkTelemetry);
+
+  Serial.println(
+
+    "BLYNK: Wi-Fi starting; motors remain under local interlock"
+
+  );
 }
 
 /* ============================================================
@@ -508,6 +547,7 @@ uint8_t autonomousMoves = 0;
 
 void cancelMotion(const char* message) {
   stopMotors();
+  remoteMotionActive = false;
 
   // Check commanded PWM duty after shutdown.
   if (pwmModeEnabled &&
@@ -718,6 +758,7 @@ void advanceMotion() {
     if (s.kind == DRIVE || s.kind == BENCH) poseKnown = false;
   }
   if (!waitingForMeasurement) motionPurpose = NONE;
+  remoteMotionActive = false;
 }
 
 void recordMeasurement(const char* input) {
@@ -990,6 +1031,150 @@ void processCommand(const char* command) {
   Serial.println("UNKNOWN COMMAND: send ? for calibration status");
 }
 
+/* ============================================================
+   7. BLYNK TELEMETRY AND BOUNDED REMOTE COMMANDS
+   ============================================================ */
+
+void publishBlynkTelemetry() {
+  if (!Blynk.connected()) return;
+
+  float frontCm = -1.0f;
+
+  // Avoid an additional ultrasonic measurement during movement.
+  if (!motionRunning &&
+      !waitingForMeasurement &&
+      movementPermitted()) {
+    frontCm = readDistanceCm(
+      senseFront_PIN_TRIG,
+      senseFront_PIN_ECHO
+    );
+  }
+
+  const char* status =
+      estopLatched ? "PHYSICAL E-STOP" :
+      remoteStopLatched ? "REMOTE STOP LATCHED" :
+      motorFaultLatched ? "MOTOR FAULT" :
+      motionRunning ? "MOVING" :
+      autonomousMode ? "AUTO READY" : "IDLE";
+
+  Blynk.virtualWrite(V0, frontCm);
+  Blynk.virtualWrite(V1, status);
+}
+
+
+void serviceBlynk() {
+  // Cancel remotely initiated motion if the connection disappears.
+  if (remoteMotionActive &&
+      (WiFi.status() != WL_CONNECTED ||
+       !Blynk.connected())) {
+    cancelMotion(
+      "BLYNK DISCONNECTED: remote movement cancelled"
+    );
+  }
+
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  static unsigned long lastConnectAttempt = 0;
+
+  // Do not attempt a potentially blocking cloud login
+  // while the motors are executing a movement step.
+  if (!Blynk.connected() && !motionRunning &&
+      (lastConnectAttempt == 0 ||
+       millis() - lastConnectAttempt >= BLYNK_RECONNECT_MS)) {
+    lastConnectAttempt = millis();
+    Blynk.connect(250);
+  }
+
+  if (Blynk.connected()) {
+    Blynk.run();
+    blynkTimer.run();
+  }
+}
+
+
+void requestRemoteMovement(const char* command) {
+  if (!ENABLE_BLYNK_MOVEMENT ||
+      !Blynk.connected() ||
+      !movementPermitted() ||
+      motionRunning ||
+      waitingForMeasurement ||
+      autonomousMode != 0 ||
+      motionPurpose != NONE) {
+    Serial.println(
+      "BLYNK MOVE BLOCKED: disabled, busy or interlocked"
+    );
+    return;
+  }
+
+  // Refuse uncalibrated forward or turning commands.
+  if ((command[0] == '2' && !calibrated20) ||
+      (command[0] == 'Q' && !calibratedLeft) ||
+      (command[0] == 'E' && !calibratedRight)) {
+    Serial.println(
+      "BLYNK MOVE BLOCKED: calibrate C2/CQ/CE first"
+    );
+    return;
+  }
+
+  processCommand(command);
+
+  if (motionRunning) {
+    remoteMotionActive = true;
+  }
+}
+
+
+// Synchronise STOP only.
+// Never replay movement buttons when reconnecting.
+BLYNK_CONNECTED() {
+  Serial.println("BLYNK ONLINE");
+  Blynk.syncVirtual(V6);
+}
+
+
+// Forward: one calibrated 20 cm movement.
+BLYNK_WRITE(V2) {
+  if (param.asInt() == 1) {
+    requestRemoteMovement("2");
+  }
+}
+
+
+// Reverse: one bounded motor-test pulse.
+BLYNK_WRITE(V3) {
+  if (param.asInt() == 1) {
+    requestRemoteMovement("B");
+  }
+}
+
+
+// Left: one calibrated 90-degree turn.
+BLYNK_WRITE(V4) {
+  if (param.asInt() == 1) {
+    requestRemoteMovement("Q");
+  }
+}
+
+
+// Right: one calibrated 90-degree turn.
+BLYNK_WRITE(V5) {
+  if (param.asInt() == 1) {
+    requestRemoteMovement("E");
+  }
+}
+
+
+// Remote stop: latched until ESP32 reset.
+BLYNK_WRITE(V6) {
+  if (param.asInt() == 1) {
+    remoteStopLatched = true;
+
+    cancelMotion(
+      "BLYNK REMOTE STOP: latched until ESP32 reset"
+    );
+  }
+}
+
 void loop() {
   static bool estopReported = false;
   static char line[24];
@@ -1002,9 +1187,16 @@ void loop() {
       Serial.println("INTERLOCK LATCHED: reset required");
       estopReported = true;
     }
-    while (Serial.available() > 0) Serial.read();
+        while (Serial.available() > 0) Serial.read();
+    serviceBlynk();
     return;
   }
+
+  serviceBlynk();
+
+  // A Blynk callback may have latched the remote stop.
+  if (!enforceMotorInterlock()) return;
+
   while (Serial.available() > 0) {
     char c = (char)Serial.read();
            if (c == 'X' || c == 'x') {
