@@ -131,11 +131,11 @@ void setLeftMotor(int direction) {
 
     const uint32_t actualDuty = ledcRead(leftMotor_PWM);
 
-      Serial.printf(
-      "LEFT PWM: requested=%u readback=%lu | %s\n",
+    Serial.printf(
+      "LEFT LEDC duty: requested=%u readback=%lu | %s\n",
       (unsigned)MOTOR_TEST_DUTY,
       (unsigned long)actualDuty,
-      actualDuty == MOTOR_TEST_DUTY ? "OK" : "MISMATCH"
+      actualDuty == MOTOR_TEST_DUTY ? "MATCH" : "MISMATCH"
     );
 
     if (actualDuty != MOTOR_TEST_DUTY) {
@@ -171,10 +171,10 @@ void setRightMotor(int direction) {
     const uint32_t actualDuty = ledcRead(rightMotor_PWM);
 
      Serial.printf(
-      "RIGHT PWM: requested=%u readback=%lu | %s\n",
+      "RIGHT LEDC duty: requested=%u readback=%lu | %s\n",
       (unsigned)MOTOR_TEST_DUTY,
       (unsigned long)actualDuty,
-      actualDuty == MOTOR_TEST_DUTY ? "OK" : "MISMATCH"
+      actualDuty == MOTOR_TEST_DUTY ? "MATCH" : "MISMATCH"
     );
 
     if (actualDuty != MOTOR_TEST_DUTY) {
@@ -239,6 +239,14 @@ void initialiseMap() {
 }
 
 void printMap() {
+  Serial.printf(
+    "POSE: %s | X=%d, Y=%d | heading=%d\n",
+    poseKnown ? "ESTIMATED" : "UNKNOWN",
+    robotCol,
+    robotRow,
+    robotHeading
+  );
+
   for (int row = 0; row < MAP_SIZE; row++) {
     for (int col = 0; col < MAP_SIZE; col++) {
       Serial.printf("%3d", tileMap[row][col]);
@@ -448,8 +456,10 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
   }
 
   Serial.printf(
-    "ECHO GPIO %d | QUALITY: %d/5 (%d%%)\n",
-    echoPin, validCount, validCount * 20
+    "ECHO GPIO %d | VALID ECHO READINGS: %d/5 (%d%%)\n",
+    echoPin,
+    validCount,
+    validCount * 20
   );
 
   if (validCount < MIN_VALID) {
@@ -699,7 +709,10 @@ void advanceMotion() {
     cancelMotion("PWM REMAINED ON AFTER STOP: reset required");
     return;
   }
-  Serial.println("STEP COMPLETE: BOTH PWM OUTPUTS ZERO");
+  Serial.println(
+    "STEP COMPLETE: BOTH LEDC DUTY READBACKS ZERO"
+  );
+
 
   // Heading is only an estimate, not encoder/IMU-verified.
   if (poseKnown) {
