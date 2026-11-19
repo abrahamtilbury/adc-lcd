@@ -45,6 +45,7 @@ const unsigned long ECHO_TIMEOUT_US = 25000UL;   // Stop waiting for an ECHO aft
 const float SENSOR_MIN_CM = 2.0f;        // Minimum accepted measurement: 2 cm
 const float SENSOR_MAX_CM = 400.0f;      // Maximum accepted measurement: 400 cm
 const float FRONT_OBSTACLE_CM = 20.0f;
+const float SIDE_TILE_BLOCK_CM = 45.0f;
 
 /* ============================================================
    2. MOTOR CONTROL AND EMERGENCY STOP
@@ -805,12 +806,77 @@ void startAutonomousTile() {
     return;
   }
 
+ 
   const int dRow[4] = {-1, 0, 1, 0};
   const int dCol[4] = {0, 1, 0, -1};
   const int relative[4] = {0, 1, 3, 2};
 
+  // Scan all three sensors with motors stopped.
+  stopMotors();
+
+  float frontCm = -1.0f;
+  float leftCm = -1.0f;
+  float rightCm = -1.0f;
+  bool frontCloseSample = false;
+
+  readAllDistances(
+    &frontCm,
+    &leftCm,
+    &rightCm,
+    &frontCloseSample
+  );
+
+  // Abort if an interlock activated during scanning.
+  if (!enforceMotorInterlock()) {
+    autonomousMode = 0;
+    Serial.println("AUTO STOP: interlock during scan");
+    return;
+  }
+
+  Serial.printf(
+    "AUTO SCAN: F=%.1f L=%.1f R=%.1f cm | frontClose=%d\n",
+    frontCm, leftCm, rightCm, frontCloseSample
+  );
+
+  // Convert relative sensor directions to map headings.
+  const int leftDir = (robotHeading + 3) % 4;
+  const int rightDir = (robotHeading + 1) % 4;
+
+  const int leftRow = robotRow + dRow[leftDir];
+  const int leftCol = robotCol + dCol[leftDir];
+
+  const int rightRow = robotRow + dRow[rightDir];
+  const int rightCol = robotCol + dCol[rightDir];
+
+  // Only valid close readings establish blocked tiles.
+  if (leftCm >= 0.0f &&
+      leftCm <= SIDE_TILE_BLOCK_CM &&
+      inMap(leftRow, leftCol)) {
+
+    tileMap[leftRow][leftCol] = 1;
+
+    Serial.printf(
+      "AUTO MAP: LEFT tile (%d,%d) BLOCKED\n",
+      leftCol, leftRow
+    );
+  }
+
+  if (rightCm >= 0.0f &&
+      rightCm <= SIDE_TILE_BLOCK_CM &&
+      inMap(rightRow, rightCol)) {
+
+    tileMap[rightRow][rightCol] = 1;
+
+    Serial.printf(
+      "AUTO MAP: RIGHT tile (%d,%d) BLOCKED\n",
+      rightCol, rightRow
+    );
+  }
+
+  // Existing candidate selector remains unchanged.
   int bestDir = -1;
   int bestScore = 99999;
+
 
   for (int i = 0; i < 4; ++i) {
     const int direction = (robotHeading + relative[i]) % 4;
