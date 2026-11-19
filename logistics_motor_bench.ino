@@ -636,11 +636,6 @@ bool beginStep() {
       cancelMotion("FRONT BLOCKED: motion cancelled");
       return false;
     }
-
-    // Sensor clearance confirmed, travel not yet confirmed.
-    if (motionPurpose == GRID && inMap(nextRow, nextCol)) {
-      tileMap[nextRow][nextCol] = 0;
-    }
   }
 
   motionRunning = true;  // A partial motor start must invalidate pose on abort.
