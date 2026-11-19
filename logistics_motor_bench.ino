@@ -43,7 +43,7 @@ const unsigned long ECHO_TIMEOUT_US = 25000UL;   // Stop waiting for an ECHO aft
 const float SENSOR_MIN_CM = 2.0f;        // Minimum accepted measurement: 2 cm
 const float SENSOR_MAX_CM = 400.0f;      // Maximum accepted measurement: 400 cm
 const float FRONT_OBSTACLE_CM = 20.0f;
-const float SIDE_TILE_BLOCK_CM = 45.0f;
+const float SIDE_TILE_BLOCK_CM = 45.0f;    // Provisional: validate against actual chassis clearance.
 
 /* ============================================================
    2. MOTOR CONTROL AND EMERGENCY STOP
@@ -301,9 +301,10 @@ void setup() {
   pinMode(senseFront_PIN_ECHO, INPUT);
 
   initialiseMap();
-
-  Serial.println("LOGISTICS BOT - MOTOR DRIVER BENCH TEST");
-  Serial.println("WHEELS OFF THE GROUND. E-stop is software-latched.");
+  
+  Serial.println("LOGISTICS BOT - COMMISSIONING MODE");
+  Serial.println("BENCH TESTS: raise wheels before testing motors.");
+  Serial.println("E-STOP: software latch; hardware cutoff separate.");
   if (emergencyStopActive()) {
     Serial.println("E-STOP ACTIVE: commands locked until reset.");
     return;
@@ -981,7 +982,11 @@ void processCommand(const char* command) {
   }
 
   if (command[1] != '\0') {
-    Serial.println("UNKNOWN COMMAND. Use ?, U/D/L/R, Q/E, 1/2, C1/C2/CQ/CE, H, X");
+    
+    Serial.println("COMMANDS: ? status, M map, H home, N one tile, Z auto, X stop");
+    Serial.println("MOVE: U/D/L/R, 1/2, Q/E | CAL: C1/C2/CQ/CE");
+    Serial.println("BENCH: A/l left, S/r right, F/B both, +/- duration");
+
     return;
   }
   const char c = command[0];
@@ -997,6 +1002,20 @@ void processCommand(const char* command) {
       robotHeading,
       (unsigned)autonomousMode
     );
+
+    Serial.printf(
+      "INTERLOCKS: E-stop=%s | Fault=%s | Remote=%s\n",
+      estopLatched ? "LATCHED" : "CLEAR",
+      motorFaultLatched ? "LATCHED" : "CLEAR",
+      remoteStopLatched ? "LATCHED" : "CLEAR"
+    );
+
+    Serial.printf(
+      "BLYNK: %s | Remote movement: %s\n",
+      Blynk.connected() ? "ONLINE" : "OFFLINE",
+      ENABLE_BLYNK_MOVEMENT ? "ENABLED" : "LOCKED"
+    );
+
     return;
   }
   if (c == 'M') {
