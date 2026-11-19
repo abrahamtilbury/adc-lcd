@@ -1,7 +1,6 @@
 #define BLYNK_TEMPLATE_ID "TMPL_REPLACE_ME"
 #define BLYNK_TEMPLATE_NAME "Logistics Bot"
 #define BLYNK_AUTH_TOKEN "REPLACE_WITH_DEVICE_TOKEN"
-
 #include <WiFi.h>
 #include <BlynkSimpleEsp32.h>
 #include <math.h>
@@ -12,7 +11,6 @@ const char WIFI_PASSWORD[] = "REPLACE_WITH_WIFI_PASSWORD";
 
 // Keep remote movement locked until safety tests pass.
 constexpr bool ENABLE_BLYNK_MOVEMENT = false;
-
 constexpr unsigned long BLYNK_RECONNECT_MS = 5000UL;
 
 BlynkTimer blynkTimer;
