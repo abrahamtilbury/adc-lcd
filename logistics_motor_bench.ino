@@ -173,7 +173,7 @@ void setRightMotor(int direction, uint8_t requestedDuty) {
 
   
   if (pwmModeEnabled) {
-    if (!ledcWrite(rightMotor_PWM, MOTOR_TEST_DUTY)) {
+    if (!ledcWrite(rightMotor_PWM, requestedDuty)) {
       latchMotorFault();
       return;
     }
@@ -185,9 +185,9 @@ void setRightMotor(int direction, uint8_t requestedDuty) {
 
      Serial.printf(
       "RIGHT LEDC duty: requested=%u readback=%lu | %s\n",
-      (unsigned)MOTOR_TEST_DUTY,
+      (unsigned)requestedDuty,
       (unsigned long)actualDuty,
-      actualDuty == MOTOR_TEST_DUTY ? "MATCH" : "MISMATCH"
+      actualDuty == requestedDuty ? "MATCH" : "MISMATCH"
     );
 
     if (actualDuty != requestedDuty) {
