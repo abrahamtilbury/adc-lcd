@@ -1353,3 +1353,11 @@ void loop() {
     Serial.println("SERIAL INPUT TOO LONG: discarded");
   }
 }
+   advanceMotion();
+   
+   // Continue autonomous exploration when the controller is idle.
+   if (autonomousMode != 0 && !motionRunning &&
+      !waitingForMeasurement && motionPurpose == NONE) {
+    startAutonomousTile();
+   }
+}
