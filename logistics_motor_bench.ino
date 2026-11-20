@@ -534,6 +534,9 @@ void readAllDistances(float* front, float* left, float* right,
 enum MotionKind : uint8_t { DRIVE, TURN_LEFT, TURN_RIGHT, BENCH };
 enum MotionPurpose : uint8_t { NONE, GRID, MANUAL, CALIBRATE, BENCH_TEST };
 
+// Explicit prototype to prevent Arduino auto-declaration errors.
+void beginPlan(MotionPurpose purpose);
+
 struct MotionStep {
   MotionKind kind;
   int leftDir, rightDir;
