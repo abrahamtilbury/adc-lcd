@@ -51,7 +51,14 @@ const float SIDE_TILE_BLOCK_CM = 45.0f;    // Provisional: validate against actu
 volatile bool estopLatched = false;
 bool motorFaultLatched = false;
 bool pwmModeEnabled = false;
-const uint8_t MOTOR_TEST_DUTY = 180; // Initial bench test: 180/255 (70.6% duty)
+const uint8_t MOTOR_TEST_DUTY = 180; // Base PWM duty
+
+// Straight-line motor balance. Tune using measured lateral drift.
+constexpr float RIGHT_DRIVE_RATIO = 0.95f;
+
+uint8_t rightDriveDuty() {
+  return (uint8_t)(MOTOR_TEST_DUTY * RIGHT_DRIVE_RATIO + 0.5f);
+}
 constexpr unsigned long MOTOR_TEST_MIN_MS = 100UL;
 constexpr unsigned long MOTOR_TEST_MAX_MS = 1000UL;
 constexpr unsigned long MOTOR_TEST_STEP_MS = 100UL;
@@ -153,7 +160,7 @@ void setLeftMotor(int direction) {
    enforceMotorInterlock();
 }
 
-void setRightMotor(int direction) {
+void setRightMotor(int direction, uint8_t requestedDuty) {
   stopRightMotor();
 
   if (!enforceMotorInterlock()) return;
@@ -183,7 +190,7 @@ void setRightMotor(int direction) {
       actualDuty == MOTOR_TEST_DUTY ? "MATCH" : "MISMATCH"
     );
 
-    if (actualDuty != MOTOR_TEST_DUTY) {
+    if (actualDuty != requestedDuty) {
       latchMotorFault();
       return;
     }
@@ -648,20 +655,29 @@ bool beginStep() {
     }
   }
 
-  motionRunning = true;  // A partial motor start must invalidate pose on abort.
+   // Apply right-wheel trim only when both wheels drive forward.
+  const bool straightForward =
+      s.kind == DRIVE && s.leftDir == 1 && s.rightDir == 1;
+
+  const uint8_t requestedRightDuty =
+      straightForward ? rightDriveDuty() : MOTOR_TEST_DUTY;
+
+  motionRunning = true;
+
   if (s.leftDir) setLeftMotor(s.leftDir);
   if (!enforceMotorInterlock()) {
     cancelMotion("INTERLOCK DURING MOTOR START");
     return false;
   }
-  if (s.rightDir) setRightMotor(s.rightDir);
+
+  if (s.rightDir) setRightMotor(s.rightDir, requestedRightDuty);
   if (!enforceMotorInterlock()) {
     cancelMotion("INTERLOCK DURING MOTOR START");
     return false;
   }
 
   const uint32_t expectedLeft = s.leftDir ? MOTOR_TEST_DUTY : 0;
-  const uint32_t expectedRight = s.rightDir ? MOTOR_TEST_DUTY : 0;
+  const uint32_t expectedRight = s.rightDir ? requestedRightDuty : 0;
   if (ledcRead(leftMotor_PWM) != expectedLeft ||
       ledcRead(rightMotor_PWM) != expectedRight) {
     latchMotorFault();
