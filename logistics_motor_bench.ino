@@ -215,7 +215,6 @@ int robotCol = 0;
 // Provisional timings (calibrated through C1, C2, CQ, CE).
 constexpr unsigned long MOTION_MIN_MS = 50UL;
 constexpr unsigned long MOTION_MAX_MS = 4000UL;
-constexpr float CALIBRATION_CLEARANCE_CM = 150.0f;
 
 unsigned long forward10Ms = 1000UL;
 unsigned long forward20Ms = 2000UL;
@@ -612,9 +611,7 @@ bool beginStep() {
     float nearest = -1.0f;
     float median = readFilteredDistanceCm(
         senseFront_PIN_TRIG, senseFront_PIN_ECHO, &nearest);
-    const float needed = (motionPurpose == CALIBRATE)
-        ? CALIBRATION_CLEARANCE_CM
-        : s.forwardCm + FRONT_OBSTACLE_CM + 5.0f;
+    const float needed = s.forwardCm + FRONT_OBSTACLE_CM + 5.0f;
         if (!enforceMotorInterlock()) {
       cancelMotion("INTERLOCK DURING CLEARANCE CHECK");
       return false;
