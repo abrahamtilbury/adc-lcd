@@ -129,6 +129,9 @@ void setLeftMotor(int direction) {
       return;
     }
 
+    delay(2);
+    if (!enforceMotorInterlock()) return;
+     
     const uint32_t actualDuty = ledcRead(leftMotor_PWM);
 
     Serial.printf(
@@ -167,6 +170,9 @@ void setRightMotor(int direction) {
       latchMotorFault();
       return;
     }
+
+    delay(2);
+    if (!enforceMotorInterlock()) return;
 
     const uint32_t actualDuty = ledcRead(rightMotor_PWM);
 
