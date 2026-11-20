@@ -418,14 +418,7 @@ bool isFrontBlocked(float distanceCm) {
          distanceCm <= FRONT_OBSTACLE_CM;
 }
 
-
-// Five samples per sensor; at least three must be valid.
-// Report the median of valid samples.
-// With four valid samples, use the lower-middle value.
-// Optional output provides nearest valid sample, independent
-// of whether enough readings exist to calculate a median.
-// Obstacle classification happens in readAllDistances().
-
+// Median of five samples; require at least three valid echoes.
 float readFilteredDistanceCm(int trigPin, int echoPin,
                              float* nearestValidSampleCm = nullptr) {
   if (nearestValidSampleCm != nullptr) {
@@ -529,7 +522,7 @@ void readAllDistances(float* front, float* left, float* right,
 }
 
 /* ============================================================
-   6. NON-BLOCKING SERIAL MOTION AND INTERACTIVE CALIBRATION
+   6. SERIAL MOTION AND CALIBRATION
    ============================================================ */
 enum MotionKind : uint8_t { DRIVE, TURN_LEFT, TURN_RIGHT, BENCH };
 enum MotionPurpose : uint8_t { NONE, GRID, MANUAL, CALIBRATE, BENCH_TEST };
@@ -722,7 +715,7 @@ void advanceMotion() {
 
   if (leftStopDuty != 0 || rightStopDuty != 0) {
     latchMotorFault();
-    cancelMotion("PWM REMAINED ON AFTER STOP: reset required");
+    cancelMotion("STOP PWM DUTY READBACK NONZERO: reset required");
     return;
   }
   Serial.println(
@@ -865,10 +858,26 @@ void startAutonomousTile() {
     frontCm, leftCm, rightCm, frontCloseSample
   );
 
-  // Convert relative sensor directions to map headings.
-  const int leftDir = (robotHeading + 3) % 4;
-  const int rightDir = (robotHeading + 1) % 4;
-
+  // Map the front, left and right sensor directions.
+   const int frontRow = robotRow + dRow[robotHeading];
+   const int frontCol = robotCol + dCol[robotHeading];
+   const int leftDir = (robotHeading + 3) % 4;
+   const int rightDir = (robotHeading + 1) % 4;
+   
+   // Use the same clearance as a 20 cm forward tile movement.
+   const float frontTileClearanceCm =
+       20.0f + FRONT_OBSTACLE_CM + 5.0f;
+   
+   if (inMap(frontRow, frontCol) &&
+       frontCm >= 0.0f &&
+       (frontCloseSample || frontCm <= frontTileClearanceCm)) {
+     tileMap[frontRow][frontCol] = 1;
+   
+     Serial.printf(
+       "AUTO MAP: FRONT tile (%d,%d) BLOCKED\n",
+       frontCol, frontRow
+     );
+   }
   const int leftRow = robotRow + dRow[leftDir];
   const int leftCol = robotCol + dCol[leftDir];
 
@@ -972,6 +981,13 @@ void processCommand(const char* command) {
     return;
   }
   if (!enforceMotorInterlock()) return;
+   // Only status and map requests are allowed during auto mode.
+   if (autonomousMode != 0 &&
+       !(command[1] == '\0' &&
+         (command[0] == '?' || command[0] == 'M'))) {
+     Serial.println("AUTO ACTIVE: press X before other commands");
+     return;
+   }
 
   if (command[0] == 'C' && command[2] == '\0' &&
       (command[1] == '1' || command[1] == '2' ||
@@ -1157,7 +1173,7 @@ void publishBlynkTelemetry() {
   }
 
   const char* status =
-      estopLatched ? "PHYSICAL E-STOP" :
+      estopLatched ? "SOFTWARE E-STOP" :
       remoteStopLatched ? "REMOTE STOP LATCHED" :
       motorFaultLatched ? "MOTOR FAULT" :
       motionRunning ? "MOVING" :
@@ -1285,6 +1301,7 @@ void loop() {
   static bool estopReported = false;
   static char line[24];
   static uint8_t length = 0;
+  static bool discardingLine = false;
 
   if (!enforceMotorInterlock()) {
     if (motionRunning || waitingForMeasurement)
@@ -1304,39 +1321,35 @@ void loop() {
   if (!enforceMotorInterlock()) return;
 
   while (Serial.available() > 0) {
-    char c = (char)Serial.read();
-           if (c == 'X' || c == 'x') {
-      length = 0;
+  const char c = (char)Serial.read();
 
-      cancelMotion(
-        "MANUAL X: BOTH MOTORS OFF; operation cancelled"
-      );
+  if (c == 'X' || c == 'x') {
+    length = 0;
+    discardingLine = false;
 
-      // Discard any commands already waiting in Serial.
-      while (Serial.available() > 0) {
-        Serial.read();
-      }
+    cancelMotion("MANUAL X: BOTH MOTORS OFF; operation cancelled");
 
-      return;
-    }
-    if (c == '\r' || c == '\n') {
-      if (length > 0) {
-        line[length] = '\0';
-        processCommand(line);
-        length = 0;
-      }
-    } else if (length < sizeof(line) - 1) {
-      line[length++] = c;
-    } else {
-      length = 0;
-      Serial.println("SERIAL INPUT TOO LONG: discarded");
-    }
+    while (Serial.available() > 0) Serial.read();
+    return;
   }
-  advanceMotion();
-   // Decide on another tile only when the controller is idle.
-  if (autonomousMode != 0 && !motionRunning &&
-      !waitingForMeasurement && motionPurpose == NONE) {
-    startAutonomousTile();
+
+  // Ignore the remainder of an oversized command.
+  if (discardingLine) {
+    if (c == '\r' || c == '\n') discardingLine = false;
+    continue;
+  }
+
+  if (c == '\r' || c == '\n') {
+    if (length > 0) {
+      line[length] = '\0';
+      processCommand(line);
+      length = 0;
+    }
+  } else if (length < sizeof(line) - 1) {
+    line[length++] = c;
+  } else {
+    length = 0;
+    discardingLine = true;
+    Serial.println("SERIAL INPUT TOO LONG: discarded");
   }
 }
-
