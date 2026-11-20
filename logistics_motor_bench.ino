@@ -560,6 +560,7 @@ uint8_t autonomousMoves = 0;
 
 void cancelMotion(const char* message) {
   stopMotors();
+  delay(5);  // Allow PWM shutdown to settle before readback.
   remoteMotionActive = false;
 
   // Check commanded PWM duty after shutdown.
@@ -708,7 +709,18 @@ void advanceMotion() {
   }
 
   stopMotors();
-  if (ledcRead(leftMotor_PWM) != 0 || ledcRead(rightMotor_PWM) != 0) {
+  delay(5);  // Allow PWM shutdown to settle.
+
+  const uint32_t leftStopDuty = ledcRead(leftMotor_PWM);
+  const uint32_t rightStopDuty = ledcRead(rightMotor_PWM);
+
+  Serial.printf(
+    "STOP PWM READBACK: LEFT=%lu RIGHT=%lu\n",
+    (unsigned long)leftStopDuty,
+    (unsigned long)rightStopDuty
+  );
+
+  if (leftStopDuty != 0 || rightStopDuty != 0) {
     latchMotorFault();
     cancelMotion("PWM REMAINED ON AFTER STOP: reset required");
     return;
