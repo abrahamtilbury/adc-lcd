@@ -846,20 +846,24 @@ void mapSideScan(const char* side, int direction,
                     side, firstCol, firstRow);
     }
 
+  
   } else if (medianCm > MAP_TILE_CM &&
              medianCm <= 2.0f * MAP_TILE_CM) {
-    // Median 15–30 cm: first clear, second blocked.
-    if (inMap(firstRow, firstCol)) {
+    // Only update unknown tiles using the 15–30 cm estimate.
+    if (inMap(firstRow, firstCol) &&
+        tileMap[firstRow][firstCol] == -1) {
       tileMap[firstRow][firstCol] = 0;
       Serial.printf("AUTO MAP: %s FIRST (%d,%d) CLEAR\n",
                     side, firstCol, firstRow);
     }
 
-    if (inMap(secondRow, secondCol)) {
+    if (inMap(secondRow, secondCol) &&
+        tileMap[secondRow][secondCol] == -1) {
       tileMap[secondRow][secondCol] = 1;
       Serial.printf("AUTO MAP: %s SECOND (%d,%d) BLOCKED\n",
                     side, secondCol, secondRow);
     }
+
 
 
   }
@@ -929,20 +933,24 @@ void startAutonomousTile() {
                     frontCol, frontRow);
     }
 
+  
   } else if (frontCm > MAP_TILE_CM &&
              frontCm <= 2.0f * MAP_TILE_CM) {
-    // Median within 15–30 cm: first tile clear, second blocked.
-    if (inMap(frontRow, frontCol)) {
+    // Only update unknown tiles using the 15–30 cm estimate.
+    if (inMap(frontRow, frontCol) &&
+        tileMap[frontRow][frontCol] == -1) {
       tileMap[frontRow][frontCol] = 0;
       Serial.printf("AUTO MAP: FIRST tile (%d,%d) CLEAR\n",
                     frontCol, frontRow);
     }
 
-    if (inMap(secondFrontRow, secondFrontCol)) {
+    if (inMap(secondFrontRow, secondFrontCol) &&
+        tileMap[secondFrontRow][secondFrontCol] == -1) {
       tileMap[secondFrontRow][secondFrontCol] = 1;
       Serial.printf("AUTO MAP: SECOND tile (%d,%d) BLOCKED\n",
                     secondFrontCol, secondFrontRow);
     }
+
 
   } 
 
