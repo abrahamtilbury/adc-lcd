@@ -384,8 +384,8 @@ void setup() {
 /* ============================================================
    5. ULTRASONIC SENSOR FUNCTIONS
    ============================================================ */
-// Returns a float distance in centimetres.
-// Returns -1.0f when the reading is invalid.
+// Returns a distance in cm.
+// -2.0f = TIMEOUT; -1.0f = out of range.
 
 float readDistanceCm(int trigPin, int echoPin) {
   // Send a 10 microsecond trigger pulse
@@ -400,11 +400,11 @@ float readDistanceCm(int trigPin, int echoPin) {
   unsigned long duration =
       pulseIn(echoPin, HIGH, ECHO_TIMEOUT_US);
 
-  // No valid echo received
+  // No echo received within the timeout period.
   if (duration == 0) {
     Serial.printf("ECHO GPIO %d | TIMEOUT | duration=%lu us\n",
                   echoPin, duration);
-    return -1.0f;
+    return -2.0f;
   }
 
   // Convert round-trip travel time to distance
@@ -416,14 +416,10 @@ float readDistanceCm(int trigPin, int echoPin) {
                   echoPin, duration, distanceCm);
     return -1.0f;
   }
-
   Serial.printf("ECHO GPIO %d | OK | duration=%lu us | distance=%.1f cm\n",
                 echoPin, duration, distanceCm);
-
   return distanceCm;
 }
-
-
 // A missing echo is unknown, not a confirmed close obstacle
 bool isFrontBlocked(float distanceCm) {
   return distanceCm >= SENSOR_MIN_CM &&
@@ -432,12 +428,16 @@ bool isFrontBlocked(float distanceCm) {
 // Median of five samples; require at least three valid echoes.
 float readFilteredDistanceCm(int trigPin, int echoPin,
                              float* nearestValidSampleCm = nullptr,
-                             uint8_t* closeEchoCount = nullptr) {
+                             uint8_t* closeEchoCount = nullptr,
+                             uint8_t* timeoutEchoCount = nullptr) {
   if (nearestValidSampleCm != nullptr) {
     *nearestValidSampleCm = -1.0f;
   }
   if (closeEchoCount != nullptr) {
     *closeEchoCount = 0;
+  }
+  if (timeoutEchoCount != nullptr) {
+    *timeoutEchoCount = 0;
   }
   const int SAMPLE_COUNT = 5;
   const int MIN_VALID = 3;
@@ -489,45 +489,39 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
   return validSamples[(validCount - 1) / 2];
 }
 
-// Update the caller's front, left and right distances.
-// Separately report whether a front sample was too close.
+// Read all sensors and classify the front scan.
 void readAllDistances(float* front, float* left, float* right,
-                      bool* frontCloseSample) {
-
+                      bool* frontCloseSample, bool* frontAllTimedOut) {
   *front = -1.0f;
   *left = -1.0f;
   *right = -1.0f;
 
-  if (frontCloseSample != nullptr) {
-    *frontCloseSample = false;
-  }
+  if (frontCloseSample != nullptr) *frontCloseSample = false;
+  if (frontAllTimedOut != nullptr) *frontAllTimedOut = false;
 
   uint8_t frontCloseEchoCount = 0;
+  uint8_t frontTimeoutEchoCount = 0;
+
   *front = readFilteredDistanceCm(
       senseFront_PIN_TRIG, senseFront_PIN_ECHO,
-      nullptr, &frontCloseEchoCount
+      nullptr, &frontCloseEchoCount, &frontTimeoutEchoCount
   );
 
   if (frontCloseSample != nullptr) {
     *frontCloseSample = frontCloseEchoCount >= CLOSE_CONFIRMATIONS;
   }
 
+  if (frontAllTimedOut != nullptr) {
+    *frontAllTimedOut = frontTimeoutEchoCount == 5;
+  }
+
   if (!enforceMotorInterlock()) return;
   delay(SENSOR_GAP_MS);
+  *left = readFilteredDistanceCm(senseLeft_PIN_TRIG, senseLeft_PIN_ECHO);
 
-  *left = readFilteredDistanceCm(
-      senseLeft_PIN_TRIG,
-      senseLeft_PIN_ECHO
-  );
-
-  
   if (!enforceMotorInterlock()) return;
   delay(SENSOR_GAP_MS);
-
-  *right = readFilteredDistanceCm(
-      senseRight_PIN_TRIG,
-      senseRight_PIN_ECHO
-  );
+  *right = readFilteredDistanceCm(senseRight_PIN_TRIG, senseRight_PIN_ECHO);
 }
 
 /* ============================================================
@@ -613,14 +607,15 @@ bool beginStep() {
   }
 
   
-  // A front scan counts close echoes; timeouts do not prove an obstacle.
+  // Five front timeouts permit motion
   stopMotors();
   if (s.forwardCm > 0.0f) {
     uint8_t closeEchoCount = 0;
+    uint8_t timeoutEchoCount = 0;
+
     readFilteredDistanceCm(
         senseFront_PIN_TRIG, senseFront_PIN_ECHO,
-        nullptr, &closeEchoCount);
-
+        nullptr, &closeEchoCount, &timeoutEchoCount);
     if (!enforceMotorInterlock()) {
       cancelMotion("INTERLOCK DURING FRONT CHECK");
       return false;
@@ -643,6 +638,14 @@ bool beginStep() {
         Serial.printf("AUTO: tile (%d,%d) BLOCKED; selecting another\n",
                       nextCol, nextRow);
         return false;
+      }
+
+      if (timeoutEchoCount == 5) {
+        Serial.println("FRONT PRECHECK: 5/5 timeouts = CLEAR by project rule");
+
+        if (motionPurpose == GRID && inMap(nextRow, nextCol)) {
+          tileMap[nextRow][nextCol] = 0;
+        }
       }
 
       cancelMotion("FRONT CLOSE OBSTACLE CONFIRMED: motion cancelled");
@@ -724,7 +727,7 @@ void advanceMotion() {
       } else if (cm >= 0.0f) {
         movingFrontCloseCount = 0;
       }
-      // Timeout (-1): ignore it; do not call this proof of clearance.
+      // Timeout (-2): no obstacle confirmation; continue the planned move
     }
     return;
   }
@@ -931,14 +934,15 @@ void startAutonomousTile() {
     const int direction = (robotHeading + relative[i]) % 4;
     const int row = robotRow + dRow[direction];
     const int col = robotCol + dCol[direction];
-
     if (!inMap(row, col) || tileMap[row][col] == 1) {
       continue;
     }
 
-    const int score =
-        (tileMap[row][col] == -1 ? 0 : 1000) +
-        10 * tileVisits[row][col] + i;
+    // Five front timeouts give forward movement priority.
+    const int score = (frontAllTimedOut && direction == robotHeading)
+        ? -1
+        : (tileMap[row][col] == -1 ? 0 : 1000) +
+          10 * tileVisits[row][col] + i;
 
     if (score < bestScore) {
       bestScore = score;
