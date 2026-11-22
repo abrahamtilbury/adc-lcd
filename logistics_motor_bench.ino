@@ -53,7 +53,7 @@ bool pwmModeEnabled = false;
 const uint8_t MOTOR_TEST_DUTY = 180; // Base PWM duty
 
 // Straight-line motor balance. Tune using measured lateral drift.
-constexpr float RIGHT_DRIVE_RATIO = 0.88f;
+constexpr float RIGHT_DRIVE_RATIO = 0.86f;
 
 uint8_t rightDriveDuty() {
   return (uint8_t)(MOTOR_TEST_DUTY * RIGHT_DRIVE_RATIO + 0.5f);
