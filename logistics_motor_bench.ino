@@ -431,10 +431,11 @@ void setup() {
     "Maximum movement duration: %lu ms\n",
     MOTION_MAX_MS
   );
+ 
   WiFi.mode(WIFI_STA);
-
   WiFi.setAutoReconnect(true);
 
+  Serial.printf("WIFI: attempting connection to %s\n", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   Blynk.config(BLYNK_AUTH_TOKEN);
@@ -1191,13 +1192,29 @@ void processCommand(const char* command) {
       remoteStopLatched ? "LATCHED" : "CLEAR"
     );
 
+    
     Serial.printf(
       "BLYNK: %s | Remote movement: %s\n",
       Blynk.connected() ? "ONLINE" : "OFFLINE",
       ENABLE_BLYNK_MOVEMENT ? "ENABLED" : "LOCKED"
     );
 
+    const wl_status_t wifiStatus = WiFi.status();
+
+    Serial.printf(
+      "WIFI: %s | status=%d\n",
+      wifiStatus == WL_CONNECTED ? "CONNECTED" : "NOT CONNECTED",
+      (int)wifiStatus
+    );
+
+    if (wifiStatus == WL_CONNECTED) {
+      Serial.print("WIFI IP: ");
+      Serial.println(WiFi.localIP());
+      Serial.printf("WIFI RSSI: %d dBm\n", WiFi.RSSI());
+    }
+
     return;
+
   }
   if (c == 'M') {
     printMap();
@@ -1334,27 +1351,56 @@ void publishBlynkTelemetry() {
 }
 
 
+
 void serviceBlynk() {
-  // Cancel remotely initiated motion if the connection disappears.
-  if (remoteMotionActive &&
-      (WiFi.status() != WL_CONNECTED ||
-       !Blynk.connected())) {
-    cancelMotion(
-      "BLYNK DISCONNECTED: remote movement cancelled"
-    );
-  }
-
-  if (WiFi.status() != WL_CONNECTED) return;
-
+  static wl_status_t lastWifiStatus = WL_IDLE_STATUS;
+  static unsigned long lastWifiReportMs = 0;
   static unsigned long lastConnectAttempt = 0;
 
-  // Do not attempt a potentially blocking cloud login
-  // while the motors are executing a movement step.
+  const wl_status_t wifiStatus = WiFi.status();
+  const unsigned long now = millis();
+
+  // Cancel remote movement if connectivity is lost.
+  if (remoteMotionActive &&
+      (wifiStatus != WL_CONNECTED || !Blynk.connected())) {
+    cancelMotion("BLYNK DISCONNECTED: remote movement cancelled");
+  }
+
+  // Report changes immediately; report offline status every 10 seconds.
+  if (wifiStatus != lastWifiStatus ||
+      (wifiStatus != WL_CONNECTED &&
+       now - lastWifiReportMs >= 10000UL)) {
+
+    if (wifiStatus == WL_CONNECTED) {
+      Serial.print("WIFI CONNECTED | IP=");
+      Serial.print(WiFi.localIP());
+      Serial.printf(" | RSSI=%d dBm\n", WiFi.RSSI());
+    } else {
+      Serial.printf("WIFI NOT CONNECTED | status=%d\n",
+                    (int)wifiStatus);
+    }
+
+    lastWifiStatus = wifiStatus;
+    lastWifiReportMs = now;
+  }
+
+  // Blynk cannot connect until Wi-Fi is established.
+  if (wifiStatus != WL_CONNECTED) return;
+
+  // Try Blynk every 5 seconds while motors are idle.
   if (!Blynk.connected() && !motionRunning &&
       (lastConnectAttempt == 0 ||
-       millis() - lastConnectAttempt >= BLYNK_RECONNECT_MS)) {
-    lastConnectAttempt = millis();
-    Blynk.connect(250);
+       now - lastConnectAttempt >= BLYNK_RECONNECT_MS)) {
+
+    lastConnectAttempt = now;
+    Serial.println("BLYNK: attempting cloud connection");
+
+    const bool connected = Blynk.connect(250);
+
+    Serial.println(
+      connected ? "BLYNK: connection successful"
+                : "BLYNK: connection failed"
+    );
   }
 
   if (Blynk.connected()) {
@@ -1362,6 +1408,7 @@ void serviceBlynk() {
     blynkTimer.run();
   }
 }
+
 
 
 void requestRemoteMovement(const char* command) {
