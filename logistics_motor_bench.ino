@@ -17,7 +17,6 @@ BlynkTimer blynkTimer;
 
 bool remoteStopLatched = false;
 bool remoteMotionActive = false;
-
 void publishBlynkTelemetry();
 
 // LOGISTICS BOT - ESP32 / L298N / 3x HC-SR04 / E-STOP
@@ -43,6 +42,7 @@ const unsigned long ECHO_TIMEOUT_US = 25000UL;   // Stop waiting for an ECHO aft
 const float SENSOR_MIN_CM = 2.0f;        // Minimum accepted measurement: 2 cm
 const float SENSOR_MAX_CM = 400.0f;      // Maximum accepted measurement: 400 cm
 const float FRONT_OBSTACLE_CM = 15.0f;
+constexpr float MAP_TILE_CM = 15.0f; // Each occupancy map tile is 15 cm
 const float SIDE_TILE_BLOCK_CM = 15.0f;    // Experimental close-only side mapping
 constexpr uint8_t CLOSE_CONFIRMATIONS = 2;
 /* ============================================================
@@ -889,16 +889,41 @@ void startAutonomousTile() {
    const int leftDir = (robotHeading + 3) % 4;
    const int rightDir = (robotHeading + 1) % 4;
    
-      // Front mapping: two close echoes block; five timeouts clear.
-   if (inMap(frontRow, frontCol) && frontCloseSample) {
-     tileMap[frontRow][frontCol] = 1;
-     Serial.printf("AUTO MAP: FRONT tile (%d,%d) BLOCKED (close echo)\n",
-                   frontCol, frontRow);
-   } else if (inMap(frontRow, frontCol) && frontAllTimedOut) {
-     tileMap[frontRow][frontCol] = 0;
-     Serial.printf("AUTO MAP: FRONT tile (%d,%d) CLEAR (5 timeouts)\n",
-                   frontCol, frontRow);
-   }
+    // Position of the second tile in the robot's facing direction.
+  const int secondFrontRow = robotRow + 2 * dRow[robotHeading];
+  const int secondFrontCol = robotCol + 2 * dCol[robotHeading];
+
+  if (frontCloseSample) {
+    // Two close echoes: obstacle in the first tile.
+    if (inMap(frontRow, frontCol)) {
+      tileMap[frontRow][frontCol] = 1;
+      Serial.printf("AUTO MAP: FIRST tile (%d,%d) BLOCKED\n",
+                    frontCol, frontRow);
+    }
+
+  } else if (frontCm > MAP_TILE_CM &&
+             frontCm <= 2.0f * MAP_TILE_CM) {
+    // Median within 15–30 cm: first tile clear, second blocked.
+    if (inMap(frontRow, frontCol)) {
+      tileMap[frontRow][frontCol] = 0;
+      Serial.printf("AUTO MAP: FIRST tile (%d,%d) CLEAR\n",
+                    frontCol, frontRow);
+    }
+
+    if (inMap(secondFrontRow, secondFrontCol)) {
+      tileMap[secondFrontRow][secondFrontCol] = 1;
+      Serial.printf("AUTO MAP: SECOND tile (%d,%d) BLOCKED\n",
+                    secondFrontCol, secondFrontRow);
+    }
+
+  } else if (frontAllTimedOut) {
+    // Project rule: five timeouts classify the next tile as clear.
+    if (inMap(frontRow, frontCol)) {
+      tileMap[frontRow][frontCol] = 0;
+      Serial.printf("AUTO MAP: FIRST tile (%d,%d) CLEAR (5 timeouts)\n",
+                    frontCol, frontRow);
+    }
+  }
 
   const int leftRow = robotRow + dRow[leftDir];
   const int leftCol = robotCol + dCol[leftDir];
