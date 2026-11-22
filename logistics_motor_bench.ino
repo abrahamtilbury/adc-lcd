@@ -406,10 +406,8 @@ float readDistanceCm(int trigPin, int echoPin) {
                   echoPin, duration);
     return -2.0f;
   }
-
   // Convert round-trip travel time to distance
   float distanceCm = duration * 0.0343f / 2.0f;
-
   if (distanceCm < SENSOR_MIN_CM ||
       distanceCm > SENSOR_MAX_CM) {
     Serial.printf("ECHO GPIO %d | OUT_OF_RANGE | duration=%lu us | distance=%.1f cm\n",
@@ -441,14 +439,15 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
   }
   const int SAMPLE_COUNT = 5;
   const int MIN_VALID = 3;
-
   float validSamples[SAMPLE_COUNT];
   int validCount = 0;
-
   for (int i = 0; i < SAMPLE_COUNT; i++) {
     if (!enforceMotorInterlock()) return -1.0f;
-    float cm = readDistanceCm(trigPin, echoPin);
-  if (cm >= 0.0f) {
+        float cm = readDistanceCm(trigPin, echoPin);
+    if (cm == -2.0f && timeoutEchoCount != nullptr) {
+      ++(*timeoutEchoCount);
+    }
+    if (cm >= 0.0f) {
       validSamples[validCount++] = cm;
       if (closeEchoCount != nullptr && isFrontBlocked(cm)) {
         ++(*closeEchoCount);
@@ -640,16 +639,16 @@ bool beginStep() {
         return false;
       }
 
-      if (timeoutEchoCount == 5) {
-        Serial.println("FRONT PRECHECK: 5/5 timeouts = CLEAR by project rule");
-
-        if (motionPurpose == GRID && inMap(nextRow, nextCol)) {
-          tileMap[nextRow][nextCol] = 0;
-        }
-      }
-
-      cancelMotion("FRONT CLOSE OBSTACLE CONFIRMED: motion cancelled");
+            cancelMotion("FRONT CLOSE OBSTACLE CONFIRMED: motion cancelled");
       return false;
+    }
+
+    if (timeoutEchoCount == 5) {
+      Serial.println("FRONT PRECHECK: 5/5 timeouts = CLEAR by project rule");
+
+      if (motionPurpose == GRID && inMap(nextRow, nextCol)) {
+        tileMap[nextRow][nextCol] = 0;
+      }
     }
   }
 
@@ -864,12 +863,15 @@ void startAutonomousTile() {
   float frontCm = -1.0f;
   float leftCm = -1.0f;
   float rightCm = -1.0f;
-  bool frontCloseSample = false;
+    bool frontCloseSample = false;
+  bool frontAllTimedOut = false;
+
   readAllDistances(
     &frontCm,
     &leftCm,
     &rightCm,
-    &frontCloseSample
+    &frontCloseSample,
+    &frontAllTimedOut
   );
   // Abort if an interlock activated during scanning.
   if (!enforceMotorInterlock()) {
@@ -887,10 +889,14 @@ void startAutonomousTile() {
    const int leftDir = (robotHeading + 3) % 4;
    const int rightDir = (robotHeading + 1) % 4;
    
-   // Mark a front tile blocked only after two close echoes.
+      // Front mapping: two close echoes block; five timeouts clear.
    if (inMap(frontRow, frontCol) && frontCloseSample) {
      tileMap[frontRow][frontCol] = 1;
      Serial.printf("AUTO MAP: FRONT tile (%d,%d) BLOCKED (close echo)\n",
+                   frontCol, frontRow);
+   } else if (inMap(frontRow, frontCol) && frontAllTimedOut) {
+     tileMap[frontRow][frontCol] = 0;
+     Serial.printf("AUTO MAP: FRONT tile (%d,%d) CLEAR (5 timeouts)\n",
                    frontCol, frontRow);
    }
 
