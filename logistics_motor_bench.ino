@@ -1,13 +1,13 @@
-#define BLYNK_TEMPLATE_ID "TMPL_REPLACE_ME"
+#define BLYNK_TEMPLATE_ID "TMPL6Ilkl1m4s"
 #define BLYNK_TEMPLATE_NAME "Logistics Bot"
-#define BLYNK_AUTH_TOKEN "REPLACE_WITH_DEVICE_TOKEN"
+#define BLYNK_AUTH_TOKEN "3vNmhfSmpQcfvnxmFQ7jxZ1E2L3NjTW_"
 #include <WiFi.h>
 #include <BlynkSimpleEsp32.h>
 #include <math.h>
 #include <stdlib.h>
 #include <Preferences.h>
-const char WIFI_SSID[] = "REPLACE_WITH_WIFI_NAME";
-const char WIFI_PASSWORD[] = "REPLACE_WITH_WIFI_PASSWORD";
+const char WIFI_SSID[] = "Abe's iPhone";
+const char WIFI_PASSWORD[] = "nintendo";
 
 // Keep remote movement locked until safety tests pass.
 constexpr bool ENABLE_BLYNK_MOVEMENT = false;
