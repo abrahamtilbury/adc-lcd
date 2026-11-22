@@ -42,9 +42,9 @@ const unsigned long SENSOR_GAP_MS = 65;          // Wait at least 65 millisecond
 const unsigned long ECHO_TIMEOUT_US = 25000UL;   // Stop waiting for an ECHO after 25,000 microseconds (25 ms)
 const float SENSOR_MIN_CM = 2.0f;        // Minimum accepted measurement: 2 cm
 const float SENSOR_MAX_CM = 400.0f;      // Maximum accepted measurement: 400 cm
-const float FRONT_OBSTACLE_CM = 20.0f;
-const float SIDE_TILE_BLOCK_CM = 45.0f;    // Provisional: validate against actual chassis clearance.
-
+const float FRONT_OBSTACLE_CM = 15.0f;
+const float SIDE_TILE_BLOCK_CM = 15.0f;    // Experimental close-only side mapping
+constexpr uint8_t CLOSE_CONFIRMATIONS = 2;
 /* ============================================================
    2. MOTOR CONTROL AND EMERGENCY STOP
    ============================================================ */
@@ -423,18 +423,21 @@ float readDistanceCm(int trigPin, int echoPin) {
   return distanceCm;
 }
 
-// The filtered front distance can indicate an obstacle.
-// A separate close-sample flag preserves conservative detection.
+
+// A missing echo is unknown, not a confirmed close obstacle
 bool isFrontBlocked(float distanceCm) {
-  return distanceCm < 0.0f ||
+  return distanceCm >= SENSOR_MIN_CM &&
          distanceCm <= FRONT_OBSTACLE_CM;
 }
-
 // Median of five samples; require at least three valid echoes.
 float readFilteredDistanceCm(int trigPin, int echoPin,
-                             float* nearestValidSampleCm = nullptr) {
+                             float* nearestValidSampleCm = nullptr,
+                             uint8_t* closeEchoCount = nullptr) {
   if (nearestValidSampleCm != nullptr) {
     *nearestValidSampleCm = -1.0f;
+  }
+  if (closeEchoCount != nullptr) {
+    *closeEchoCount = 0;
   }
   const int SAMPLE_COUNT = 5;
   const int MIN_VALID = 3;
@@ -445,17 +448,16 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
   for (int i = 0; i < SAMPLE_COUNT; i++) {
     if (!enforceMotorInterlock()) return -1.0f;
     float cm = readDistanceCm(trigPin, echoPin);
-
   if (cm >= 0.0f) {
-    validSamples[validCount++] = cm;
-
-  if (nearestValidSampleCm != nullptr &&
-    (*nearestValidSampleCm < 0.0f ||
-       cm < *nearestValidSampleCm)) {
+      validSamples[validCount++] = cm;
+      if (closeEchoCount != nullptr && isFrontBlocked(cm)) {
+        ++(*closeEchoCount);
+      }
+      if (nearestValidSampleCm != nullptr &&
+          (*nearestValidSampleCm < 0.0f || cm < *nearestValidSampleCm)) {
         *nearestValidSampleCm = cm;
       }
     }
-
     if (i < SAMPLE_COUNT - 1) {
       delay(SENSOR_GAP_MS);
     }
@@ -500,19 +502,14 @@ void readAllDistances(float* front, float* left, float* right,
     *frontCloseSample = false;
   }
 
-  float nearestFrontSampleCm = -1.0f;
-
-
+  uint8_t frontCloseEchoCount = 0;
   *front = readFilteredDistanceCm(
-      senseFront_PIN_TRIG,
-      senseFront_PIN_ECHO,
-      &nearestFrontSampleCm
+      senseFront_PIN_TRIG, senseFront_PIN_ECHO,
+      nullptr, &frontCloseEchoCount
   );
 
   if (frontCloseSample != nullptr) {
-    *frontCloseSample =
-        nearestFrontSampleCm >= 0.0f &&
-        isFrontBlocked(nearestFrontSampleCm);
+    *frontCloseSample = frontCloseEchoCount >= CLOSE_CONFIRMATIONS;
   }
 
   if (!enforceMotorInterlock()) return;
@@ -554,6 +551,9 @@ uint8_t stepCount = 0;
 uint8_t stepIndex = 0;
 unsigned long stepStartMs = 0;
 unsigned long lastFrontMs = 0;
+
+uint8_t movingFrontCloseCount = 0;
+
 bool motionRunning = false;
 bool waitingForMeasurement = false;
 MotionPurpose motionPurpose = NONE;
@@ -612,26 +612,24 @@ bool beginStep() {
     return false;
   }
 
-  // Motors remain off during the filtered pre-movement clearance scan.
+  
+  // A front scan counts close echoes; timeouts do not prove an obstacle.
   stopMotors();
   if (s.forwardCm > 0.0f) {
-    float nearest = -1.0f;
-    float median = readFilteredDistanceCm(
-        senseFront_PIN_TRIG, senseFront_PIN_ECHO, &nearest);
-    const float needed = s.forwardCm + FRONT_OBSTACLE_CM + 5.0f;
-        if (!enforceMotorInterlock()) {
-      cancelMotion("INTERLOCK DURING CLEARANCE CHECK");
+    uint8_t closeEchoCount = 0;
+    readFilteredDistanceCm(
+        senseFront_PIN_TRIG, senseFront_PIN_ECHO,
+        nullptr, &closeEchoCount);
+
+    if (!enforceMotorInterlock()) {
+      cancelMotion("INTERLOCK DURING FRONT CHECK");
       return false;
     }
 
-    // Insufficient valid echoes cannot classify a tile.
-    if (median < 0.0f || nearest < 0.0f) {
-      cancelMotion("FRONT ECHO INVALID: motion cancelled");
-      return false;
-    }
+    Serial.printf("FRONT PRECHECK: %u/5 close echoes (<= %.1f cm)\n",
+                  (unsigned)closeEchoCount, FRONT_OBSTACLE_CM);
 
-    // A close return makes the target unsafe to enter.
-    if (nearest <= needed) {
+    if (closeEchoCount >= CLOSE_CONFIRMATIONS) {
       if (motionPurpose == GRID && inMap(nextRow, nextCol)) {
         tileMap[nextRow][nextCol] = 1;
       }
@@ -642,18 +640,16 @@ bool beginStep() {
         motionPurpose = NONE;
         stepCount = 0;
         stepIndex = 0;
-
-        Serial.printf(
-          "AUTO: tile (%d,%d) BLOCKED; selecting another\n",
-          nextCol, nextRow
-        );
+        Serial.printf("AUTO: tile (%d,%d) BLOCKED; selecting another\n",
+                      nextCol, nextRow);
         return false;
       }
 
-      cancelMotion("FRONT BLOCKED: motion cancelled");
+      cancelMotion("FRONT CLOSE OBSTACLE CONFIRMED: motion cancelled");
       return false;
     }
   }
+
 
    // Apply right-wheel trim only when both wheels drive forward.
   const bool straightForward =
@@ -685,8 +681,12 @@ bool beginStep() {
     return false;
   }
 
+
+
+
   stepStartMs = millis();
   lastFrontMs = stepStartMs;
+  movingFrontCloseCount = 0;
   Serial.printf("STEP %u/%u: %lu ms; LEFT=%d RIGHT=%d\n",
                 stepIndex + 1, stepCount, s.durationMs,
                 s.leftDir, s.rightDir);
@@ -712,10 +712,19 @@ void advanceMotion() {
       lastFrontMs = millis();
       const float cm = readDistanceCm(senseFront_PIN_TRIG,
                                       senseFront_PIN_ECHO);
-      if (!enforceMotorInterlock() || cm < 0.0f ||
-          cm <= FRONT_OBSTACLE_CM) {
-        cancelMotion("FRONT OBSTACLE/INVALID ECHO: STOP; pose unknown");
+      if (!enforceMotorInterlock()) {
+        cancelMotion("INTERLOCK DURING FRONT CHECK");
+        return;
       }
+      if (isFrontBlocked(cm)) {
+        ++movingFrontCloseCount;
+        if (movingFrontCloseCount >= CLOSE_CONFIRMATIONS) {
+          cancelMotion("CONFIRMED FRONT OBSTACLE <=15 cm: STOP; pose unknown");
+        }
+      } else if (cm >= 0.0f) {
+        movingFrontCloseCount = 0;
+      }
+      // Timeout (-1): ignore it; do not call this proof of clearance.
     }
     return;
   }
@@ -844,59 +853,44 @@ void startAutonomousTile() {
     );
     return;
   }
-
- 
   const int dRow[4] = {-1, 0, 1, 0};
   const int dCol[4] = {0, 1, 0, -1};
   const int relative[4] = {0, 1, 3, 2};
-
   // Scan all three sensors with motors stopped.
   stopMotors();
-
   float frontCm = -1.0f;
   float leftCm = -1.0f;
   float rightCm = -1.0f;
   bool frontCloseSample = false;
-
   readAllDistances(
     &frontCm,
     &leftCm,
     &rightCm,
     &frontCloseSample
   );
-
   // Abort if an interlock activated during scanning.
   if (!enforceMotorInterlock()) {
     autonomousMode = 0;
     Serial.println("AUTO STOP: interlock during scan");
     return;
   }
-
   Serial.printf(
     "AUTO SCAN: F=%.1f L=%.1f R=%.1f cm | frontClose=%d\n",
     frontCm, leftCm, rightCm, frontCloseSample
   );
-
   // Map the front, left and right sensor directions.
    const int frontRow = robotRow + dRow[robotHeading];
    const int frontCol = robotCol + dCol[robotHeading];
    const int leftDir = (robotHeading + 3) % 4;
    const int rightDir = (robotHeading + 1) % 4;
    
-   // Use the same clearance as a 20 cm forward tile movement.
-   const float frontTileClearanceCm =
-       20.0f + FRONT_OBSTACLE_CM + 5.0f;
-   
-   if (inMap(frontRow, frontCol) &&
-       frontCm >= 0.0f &&
-       (frontCloseSample || frontCm <= frontTileClearanceCm)) {
+   // Mark a front tile blocked only after two close echoes.
+   if (inMap(frontRow, frontCol) && frontCloseSample) {
      tileMap[frontRow][frontCol] = 1;
-   
-     Serial.printf(
-       "AUTO MAP: FRONT tile (%d,%d) BLOCKED\n",
-       frontCol, frontRow
-     );
+     Serial.printf("AUTO MAP: FRONT tile (%d,%d) BLOCKED (close echo)\n",
+                   frontCol, frontRow);
    }
+
   const int leftRow = robotRow + dRow[leftDir];
   const int leftCol = robotCol + dCol[leftDir];
 
