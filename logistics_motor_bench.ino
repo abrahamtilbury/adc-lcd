@@ -423,39 +423,31 @@ bool isFrontBlocked(float distanceCm) {
          distanceCm <= FRONT_OBSTACLE_CM;
 }
 // Median of five samples; require at least three valid echoes.
+
 float readFilteredDistanceCm(int trigPin, int echoPin,
-                             float* nearestValidSampleCm = nullptr,
-                             uint8_t* closeEchoCount = nullptr,
-                             uint8_t* timeoutEchoCount = nullptr) {
-  if (nearestValidSampleCm != nullptr) {
-    *nearestValidSampleCm = -1.0f;
-  }
+                             uint8_t* closeEchoCount = nullptr) {
   if (closeEchoCount != nullptr) {
     *closeEchoCount = 0;
   }
-  if (timeoutEchoCount != nullptr) {
-    *timeoutEchoCount = 0;
-  }
+
   const int SAMPLE_COUNT = 5;
   const int MIN_VALID = 3;
   float validSamples[SAMPLE_COUNT];
   int validCount = 0;
+
   for (int i = 0; i < SAMPLE_COUNT; i++) {
     if (!enforceMotorInterlock()) return -1.0f;
-        float cm = readDistanceCm(trigPin, echoPin);
-    if (cm == -2.0f && timeoutEchoCount != nullptr) {
-      ++(*timeoutEchoCount);
-    }
+
+    const float cm = readDistanceCm(trigPin, echoPin);
+
     if (cm >= 0.0f) {
       validSamples[validCount++] = cm;
+
       if (closeEchoCount != nullptr && isFrontBlocked(cm)) {
         ++(*closeEchoCount);
       }
-      if (nearestValidSampleCm != nullptr &&
-          (*nearestValidSampleCm < 0.0f || cm < *nearestValidSampleCm)) {
-        *nearestValidSampleCm = cm;
-      }
     }
+
     if (i < SAMPLE_COUNT - 1) {
       delay(SENSOR_GAP_MS);
     }
@@ -472,7 +464,7 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
     return -1.0f;
   }
 
-  // Sort only the valid measurements.
+  // Sort valid measurements to calculate the median.
   for (int i = 0; i < validCount - 1; i++) {
     for (int j = i + 1; j < validCount; j++) {
       if (validSamples[i] > validSamples[j]) {
@@ -483,66 +475,44 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
     }
   }
 
-  // Always return the median valid distance.
   return validSamples[(validCount - 1) / 2];
 }
 
+
 // Read and classify front, left and right sensor scans.
 
-void readAllDistances(float* front, float* left, float* right,
-                      bool* frontClose, bool* frontTimeout,
-                      bool* leftClose, bool* leftTimeout,
-                      bool* rightClose, bool* rightTimeout) {
-  *front = -1.0f;
-  *left = -1.0f;
-  *right = -1.0f;
 
-  *frontClose = false;
-  *frontTimeout = false;
-  *leftClose = false;
-  *leftTimeout = false;
-  *rightClose = false;
-  *rightTimeout = false;
+void readAllDistances(float* front, float* left, float* right,
+                      bool* frontClose, bool* leftClose, bool* rightClose) {
+  *front = *left = *right = -1.0f;
+  *frontClose = *leftClose = *rightClose = false;
 
   uint8_t closeCount = 0;
-  uint8_t timeoutCount = 0;
 
   // Front sensor
   *front = readFilteredDistanceCm(
-      senseFront_PIN_TRIG, senseFront_PIN_ECHO,
-      nullptr, &closeCount, &timeoutCount);
-
+      senseFront_PIN_TRIG, senseFront_PIN_ECHO, &closeCount);
   *frontClose = closeCount >= CLOSE_CONFIRMATIONS;
-  *frontTimeout = timeoutCount == 5;
 
   if (!enforceMotorInterlock()) return;
   delay(SENSOR_GAP_MS);
 
   // Left sensor
   closeCount = 0;
-  timeoutCount = 0;
-
   *left = readFilteredDistanceCm(
-      senseLeft_PIN_TRIG, senseLeft_PIN_ECHO,
-      nullptr, &closeCount, &timeoutCount);
-
+      senseLeft_PIN_TRIG, senseLeft_PIN_ECHO, &closeCount);
   *leftClose = closeCount >= CLOSE_CONFIRMATIONS;
-  *leftTimeout = timeoutCount == 5;
 
   if (!enforceMotorInterlock()) return;
   delay(SENSOR_GAP_MS);
 
   // Right sensor
   closeCount = 0;
-  timeoutCount = 0;
-
   *right = readFilteredDistanceCm(
-      senseRight_PIN_TRIG, senseRight_PIN_ECHO,
-      nullptr, &closeCount, &timeoutCount);
-
+      senseRight_PIN_TRIG, senseRight_PIN_ECHO, &closeCount);
   *rightClose = closeCount >= CLOSE_CONFIRMATIONS;
-  *rightTimeout = timeoutCount == 5;
 }
+
 
 
 /* ============================================================
@@ -628,15 +598,15 @@ bool beginStep() {
   }
 
   
-  // Five front timeouts permit motion
+  
+  // Check for confirmed close obstacles; timeouts are unknown.
   stopMotors();
   if (s.forwardCm > 0.0f) {
     uint8_t closeEchoCount = 0;
-    uint8_t timeoutEchoCount = 0;
 
     readFilteredDistanceCm(
-        senseFront_PIN_TRIG, senseFront_PIN_ECHO,
-        nullptr, &closeEchoCount, &timeoutEchoCount);
+        senseFront_PIN_TRIG, senseFront_PIN_ECHO, &closeEchoCount);
+
     if (!enforceMotorInterlock()) {
       cancelMotion("INTERLOCK DURING FRONT CHECK");
       return false;
@@ -663,14 +633,6 @@ bool beginStep() {
 
             cancelMotion("FRONT CLOSE OBSTACLE CONFIRMED: motion cancelled");
       return false;
-    }
-
-    if (timeoutEchoCount == 5) {
-      Serial.println("FRONT PRECHECK: 5/5 timeouts = CLEAR by project rule");
-
-      if (motionPurpose == GRID && inMap(nextRow, nextCol)) {
-        tileMap[nextRow][nextCol] = 0;
-      }
     }
   }
 
@@ -864,9 +826,10 @@ void recordMeasurement(const char* input) {
 }
 
 
+
 void mapSideScan(const char* side, int direction,
-                 float medianCm, bool closeConfirmed,
-                 bool allTimedOut) {
+                 float medianCm, bool closeConfirmed) {
+
   const int dRow[4] = {-1, 0, 1, 0};
   const int dCol[4] = {0, 1, 0, -1};
 
@@ -898,15 +861,10 @@ void mapSideScan(const char* side, int direction,
                     side, secondCol, secondRow);
     }
 
-  } else if (allTimedOut) {
-    // Project rule: five timeouts clear the first tile.
-    if (inMap(firstRow, firstCol)) {
-      tileMap[firstRow][firstCol] = 0;
-      Serial.printf("AUTO MAP: %s FIRST (%d,%d) CLEAR (5 timeouts)\n",
-                    side, firstCol, firstRow);
-    }
+
   }
 }
+
 
 // Prefer unknown tiles, then least-visited clear tiles.
 // Direction tie-break: front, right, left, back.
@@ -932,19 +890,16 @@ void startAutonomousTile() {
   float leftCm = -1.0f;
   float rightCm = -1.0f;
 
+
   bool frontCloseSample = false;
-  bool frontAllTimedOut = false;
   bool leftCloseSample = false;
-  bool leftAllTimedOut = false;
   bool rightCloseSample = false;
-  bool rightAllTimedOut = false;
 
   readAllDistances(
     &frontCm, &leftCm, &rightCm,
-    &frontCloseSample, &frontAllTimedOut,
-    &leftCloseSample, &leftAllTimedOut,
-    &rightCloseSample, &rightAllTimedOut
+    &frontCloseSample, &leftCloseSample, &rightCloseSample
   );
+
 
   // Abort if an interlock activated during scanning.
   if (!enforceMotorInterlock()) {
@@ -989,26 +944,14 @@ void startAutonomousTile() {
                     secondFrontCol, secondFrontRow);
     }
 
-  } else if (frontAllTimedOut) {
-    // Project rule: five timeouts classify the next tile as clear.
-    if (inMap(frontRow, frontCol)) {
-      tileMap[frontRow][frontCol] = 0;
-      Serial.printf("AUTO MAP: FIRST tile (%d,%d) CLEAR (5 timeouts)\n",
-                    frontCol, frontRow);
-    }
-  }
+  } 
 
   
   // Map the left and right directions using the same rules.
-  mapSideScan(
-    "LEFT", leftDir, leftCm,
-    leftCloseSample, leftAllTimedOut
-  );
+  
+  mapSideScan("LEFT", leftDir, leftCm, leftCloseSample);
+  mapSideScan("RIGHT", rightDir, rightCm, rightCloseSample);
 
-  mapSideScan(
-    "RIGHT", rightDir, rightCm,
-    rightCloseSample, rightAllTimedOut
-  );
 
 
   // Existing candidate selector remains unchanged.
@@ -1024,11 +967,11 @@ void startAutonomousTile() {
       continue;
     }
 
-    // Five front timeouts give forward movement priority.
-    const int score = (frontAllTimedOut && direction == robotHeading)
-        ? -1
-        : (tileMap[row][col] == -1 ? 0 : 1000) +
-          10 * tileVisits[row][col] + i;
+    
+    // Prefer unexplored tiles, then less-visited known-clear tiles.
+    const int score = (tileMap[row][col] == -1 ? 0 : 1000) +
+                      10 * tileVisits[row][col] + i;
+
 
     if (score < bestScore) {
       bestScore = score;
