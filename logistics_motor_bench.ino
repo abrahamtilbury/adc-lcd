@@ -43,7 +43,6 @@ const float SENSOR_MIN_CM = 2.0f;        // Minimum accepted measurement: 2 cm
 const float SENSOR_MAX_CM = 400.0f;      // Maximum accepted measurement: 400 cm
 const float FRONT_OBSTACLE_CM = 15.0f;
 constexpr float MAP_TILE_CM = 15.0f; // Each occupancy map tile is 15 cm
-const float SIDE_TILE_BLOCK_CM = 15.0f;    // Experimental close-only side mapping
 constexpr uint8_t CLOSE_CONFIRMATIONS = 2;
 /* ============================================================
    2. MOTOR CONTROL AND EMERGENCY STOP
@@ -489,39 +488,62 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
 }
 
 // Read all sensors and classify the front scan.
+
 void readAllDistances(float* front, float* left, float* right,
-                      bool* frontCloseSample, bool* frontAllTimedOut) {
+                      bool* frontClose, bool* frontTimeout,
+                      bool* leftClose, bool* leftTimeout,
+                      bool* rightClose, bool* rightTimeout) {
   *front = -1.0f;
   *left = -1.0f;
   *right = -1.0f;
 
-  if (frontCloseSample != nullptr) *frontCloseSample = false;
-  if (frontAllTimedOut != nullptr) *frontAllTimedOut = false;
+  *frontClose = false;
+  *frontTimeout = false;
+  *leftClose = false;
+  *leftTimeout = false;
+  *rightClose = false;
+  *rightTimeout = false;
 
-  uint8_t frontCloseEchoCount = 0;
-  uint8_t frontTimeoutEchoCount = 0;
+  uint8_t closeCount = 0;
+  uint8_t timeoutCount = 0;
 
+  // Front sensor
   *front = readFilteredDistanceCm(
       senseFront_PIN_TRIG, senseFront_PIN_ECHO,
-      nullptr, &frontCloseEchoCount, &frontTimeoutEchoCount
-  );
+      nullptr, &closeCount, &timeoutCount);
 
-  if (frontCloseSample != nullptr) {
-    *frontCloseSample = frontCloseEchoCount >= CLOSE_CONFIRMATIONS;
-  }
-
-  if (frontAllTimedOut != nullptr) {
-    *frontAllTimedOut = frontTimeoutEchoCount == 5;
-  }
+  *frontClose = closeCount >= CLOSE_CONFIRMATIONS;
+  *frontTimeout = timeoutCount == 5;
 
   if (!enforceMotorInterlock()) return;
   delay(SENSOR_GAP_MS);
-  *left = readFilteredDistanceCm(senseLeft_PIN_TRIG, senseLeft_PIN_ECHO);
+
+  // Left sensor
+  closeCount = 0;
+  timeoutCount = 0;
+
+  *left = readFilteredDistanceCm(
+      senseLeft_PIN_TRIG, senseLeft_PIN_ECHO,
+      nullptr, &closeCount, &timeoutCount);
+
+  *leftClose = closeCount >= CLOSE_CONFIRMATIONS;
+  *leftTimeout = timeoutCount == 5;
 
   if (!enforceMotorInterlock()) return;
   delay(SENSOR_GAP_MS);
-  *right = readFilteredDistanceCm(senseRight_PIN_TRIG, senseRight_PIN_ECHO);
+
+  // Right sensor
+  closeCount = 0;
+  timeoutCount = 0;
+
+  *right = readFilteredDistanceCm(
+      senseRight_PIN_TRIG, senseRight_PIN_ECHO,
+      nullptr, &closeCount, &timeoutCount);
+
+  *rightClose = closeCount >= CLOSE_CONFIRMATIONS;
+  *rightTimeout = timeoutCount == 5;
 }
+
 
 /* ============================================================
    6. SERIAL MOTION AND CALIBRATION
@@ -841,6 +863,51 @@ void recordMeasurement(const char* input) {
   calibrationKind = 0;
 }
 
+
+void mapSideScan(const char* side, int direction,
+                 float medianCm, bool closeConfirmed,
+                 bool allTimedOut) {
+  const int dRow[4] = {-1, 0, 1, 0};
+  const int dCol[4] = {0, 1, 0, -1};
+
+  const int firstRow = robotRow + dRow[direction];
+  const int firstCol = robotCol + dCol[direction];
+  const int secondRow = robotRow + 2 * dRow[direction];
+  const int secondCol = robotCol + 2 * dCol[direction];
+
+  if (closeConfirmed) {
+    // Two close echoes: first tile blocked.
+    if (inMap(firstRow, firstCol)) {
+      tileMap[firstRow][firstCol] = 1;
+      Serial.printf("AUTO MAP: %s FIRST (%d,%d) BLOCKED\n",
+                    side, firstCol, firstRow);
+    }
+
+  } else if (medianCm > MAP_TILE_CM &&
+             medianCm <= 2.0f * MAP_TILE_CM) {
+    // Median 15–30 cm: first clear, second blocked.
+    if (inMap(firstRow, firstCol)) {
+      tileMap[firstRow][firstCol] = 0;
+      Serial.printf("AUTO MAP: %s FIRST (%d,%d) CLEAR\n",
+                    side, firstCol, firstRow);
+    }
+
+    if (inMap(secondRow, secondCol)) {
+      tileMap[secondRow][secondCol] = 1;
+      Serial.printf("AUTO MAP: %s SECOND (%d,%d) BLOCKED\n",
+                    side, secondCol, secondRow);
+    }
+
+  } else if (allTimedOut) {
+    // Project rule: five timeouts clear the first tile.
+    if (inMap(firstRow, firstCol)) {
+      tileMap[firstRow][firstCol] = 0;
+      Serial.printf("AUTO MAP: %s FIRST (%d,%d) CLEAR (5 timeouts)\n",
+                    side, firstCol, firstRow);
+    }
+  }
+}
+
 // Prefer unknown tiles, then least-visited clear tiles.
 // Direction tie-break: front, right, left, back.
 void startAutonomousTile() {
@@ -860,19 +927,25 @@ void startAutonomousTile() {
   const int relative[4] = {0, 1, 3, 2};
   // Scan all three sensors with motors stopped.
   stopMotors();
+  
   float frontCm = -1.0f;
   float leftCm = -1.0f;
   float rightCm = -1.0f;
-    bool frontCloseSample = false;
+
+  bool frontCloseSample = false;
   bool frontAllTimedOut = false;
+  bool leftCloseSample = false;
+  bool leftAllTimedOut = false;
+  bool rightCloseSample = false;
+  bool rightAllTimedOut = false;
 
   readAllDistances(
-    &frontCm,
-    &leftCm,
-    &rightCm,
-    &frontCloseSample,
-    &frontAllTimedOut
+    &frontCm, &leftCm, &rightCm,
+    &frontCloseSample, &frontAllTimedOut,
+    &leftCloseSample, &leftAllTimedOut,
+    &rightCloseSample, &rightAllTimedOut
   );
+
   // Abort if an interlock activated during scanning.
   if (!enforceMotorInterlock()) {
     autonomousMode = 0;
@@ -925,36 +998,18 @@ void startAutonomousTile() {
     }
   }
 
-  const int leftRow = robotRow + dRow[leftDir];
-  const int leftCol = robotCol + dCol[leftDir];
+  
+  // Map the left and right directions using the same rules.
+  mapSideScan(
+    "LEFT", leftDir, leftCm,
+    leftCloseSample, leftAllTimedOut
+  );
 
-  const int rightRow = robotRow + dRow[rightDir];
-  const int rightCol = robotCol + dCol[rightDir];
+  mapSideScan(
+    "RIGHT", rightDir, rightCm,
+    rightCloseSample, rightAllTimedOut
+  );
 
-  // Only valid close readings establish blocked tiles.
-  if (leftCm >= 0.0f &&
-      leftCm <= SIDE_TILE_BLOCK_CM &&
-      inMap(leftRow, leftCol)) {
-
-    tileMap[leftRow][leftCol] = 1;
-
-    Serial.printf(
-      "AUTO MAP: LEFT tile (%d,%d) BLOCKED\n",
-      leftCol, leftRow
-    );
-  }
-
-  if (rightCm >= 0.0f &&
-      rightCm <= SIDE_TILE_BLOCK_CM &&
-      inMap(rightRow, rightCol)) {
-
-    tileMap[rightRow][rightCol] = 1;
-
-    Serial.printf(
-      "AUTO MAP: RIGHT tile (%d,%d) BLOCKED\n",
-      rightCol, rightRow
-    );
-  }
 
   // Existing candidate selector remains unchanged.
   int bestDir = -1;
