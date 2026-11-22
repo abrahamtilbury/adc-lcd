@@ -5,7 +5,7 @@
 #include <BlynkSimpleEsp32.h>
 #include <math.h>
 #include <stdlib.h>
-
+#include <Preferences.h>
 const char WIFI_SSID[] = "REPLACE_WITH_WIFI_NAME";
 const char WIFI_PASSWORD[] = "REPLACE_WITH_WIFI_PASSWORD";
 
@@ -232,6 +232,73 @@ bool calibrated15 = false;
 bool calibratedLeft = false;
 bool calibratedRight = false;
 
+
+/* ============================================================
+   VERIFIED CALIBRATION STORAGE - ESP32 NVS FLASH
+   ============================================================ */
+
+Preferences calibrationStore;
+bool calibrationStorageReady = false;
+
+// Increment this if motor hardware or timing behaviour changes.
+constexpr uint32_t CAL_PROFILE_VERSION = 1;
+
+// Changing the base PWM or right-wheel trim invalidates old timings.
+uint32_t calibrationProfile() {
+  return (CAL_PROFILE_VERSION << 16) |
+         ((uint32_t)MOTOR_TEST_DUTY << 8) |
+         (uint32_t)rightDriveDuty();
+}
+
+void restoreCalibration(const char* key,
+                        unsigned long& duration,
+                        bool& verified) {
+  const unsigned long saved = calibrationStore.getULong(key, 0);
+
+  if (saved >= MOTION_MIN_MS && saved <= MOTION_MAX_MS) {
+    duration = saved;
+    verified = true;
+  }
+}
+
+void loadSavedCalibrations() {
+  calibrationStorageReady = calibrationStore.begin("logbotcal", false);
+
+  if (!calibrationStorageReady) {
+    Serial.println("CAL FLASH ERROR: defaults retained");
+    return;
+  }
+
+  const uint32_t profile = calibrationProfile();
+
+  if (calibrationStore.getULong("profile", 0) != profile) {
+    // Clear only this project's calibration namespace.
+    if (!calibrationStore.clear() ||
+        calibrationStore.putULong("profile", profile) != 4) {
+      Serial.println("CAL FLASH ERROR: cannot initialise storage");
+      calibrationStore.end();
+      calibrationStorageReady = false;
+      return;
+    }
+
+    Serial.println("CAL FLASH: new motor profile; old timings cleared");
+  }
+
+  restoreCalibration("c1", forward10Ms, calibrated10);
+  restoreCalibration("c2", forward15Ms, calibrated15);
+  restoreCalibration("cq", turnLeft90Ms, calibratedLeft);
+  restoreCalibration("ce", turnRight90Ms, calibratedRight);
+
+  Serial.printf(
+    "CAL FLASH: C1=%s C2=%s CQ=%s CE=%s\n",
+    calibrated10 ? "RESTORED" : "UNVERIFIED",
+    calibrated15 ? "RESTORED" : "UNVERIFIED",
+    calibratedLeft ? "RESTORED" : "UNVERIFIED",
+    calibratedRight ? "RESTORED" : "UNVERIFIED"
+  );
+}
+
+
 // 0=up, 1=right, 2=down, 3=left.
 int robotHeading = 0;
 bool poseKnown = false;
@@ -311,9 +378,12 @@ void setup() {
   pinMode(senseLeft_PIN_ECHO, INPUT);
   pinMode(senseFront_PIN_ECHO, INPUT);
 
-  initialiseMap();
   
+  initialiseMap();
+  loadSavedCalibrations();
+
   Serial.println("LOGISTICS BOT - COMMISSIONING MODE");
+
   Serial.println("BENCH TESTS: raise wheels before testing motors.");
   Serial.println("E-STOP: software latch; hardware cutoff separate.");
   if (emergencyStopActive()) {
@@ -817,6 +887,32 @@ void recordMeasurement(const char* input) {
     case 'Q': turnLeft90Ms = nextMs; calibratedLeft = verified; break;
     case 'E': turnRight90Ms = nextMs; calibratedRight = verified; break;
   }
+  
+  // Identify the flash key for this calibration.
+  const char* calKey =
+      calibrationKind == '1' ? "c1" :
+      calibrationKind == '2' ? "c2" :
+      calibrationKind == 'Q' ? "cq" :
+      calibrationKind == 'E' ? "ce" : nullptr;
+
+  if (calibrationStorageReady && calKey != nullptr) {
+    if (verified) {
+      // Save only the duration that was physically verified.
+      if (calibrationStore.putULong(calKey, nextMs) == 4) {
+        Serial.printf("CAL FLASH SAVED: %s = %lu ms\n",
+                      calKey, nextMs);
+      } else {
+        Serial.println("CAL FLASH SAVE FAILED: RAM only");
+      }
+    } else {
+      // A failed retest invalidates any previously saved calibration.
+      if (calibrationStore.isKey(calKey) &&
+          !calibrationStore.remove(calKey)) {
+        Serial.println("CAL FLASH WARNING: old value not erased");
+      }
+    }
+  }
+
   Serial.printf("MEASURED %.1f, TARGET %.1f => NEXT TEST %lu ms; %s\n",
                 actual, target, nextMs,
                 verified ? "VERIFIED (within test tolerance)" : "REPEAT CALIBRATION");
