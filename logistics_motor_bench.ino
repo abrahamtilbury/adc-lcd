@@ -223,12 +223,12 @@ constexpr unsigned long MOTION_MIN_MS = 50UL;
 constexpr unsigned long MOTION_MAX_MS = 4000UL;
 
 unsigned long forward10Ms = 1000UL;
-unsigned long forward20Ms = 2000UL;
+unsigned long forward15Ms = 1500UL;
 unsigned long turnLeft90Ms = 500UL;
 unsigned long turnRight90Ms = 500UL;
 
 bool calibrated10 = false;
-bool calibrated20 = false;
+bool calibrated15 = false;
 bool calibratedLeft = false;
 bool calibratedRight = false;
 
@@ -339,10 +339,10 @@ void setup() {
     (unsigned)MOTOR_TEST_DUTY
   );
 
-  Serial.println("GRID: U/D/L/R = one 20cm tile");
+  Serial.println("GRID: U/D/L/R = one 15cm tile");
   Serial.println("TURNS: Q/E = left/right 90 degrees");
-  Serial.println("DISTANCE: 1/2 = forward 10cm/20cm");
-  Serial.println("CALIBRATE: C1, C2, CQ, CE");
+  Serial.println("DISTANCE: 1/2 = forward 10cm/15cm");
+  Serial.println("CALIBRATE: C1=10cm, C2=15cm, CQ, CE");
   Serial.println("HOME: H = physical grid alignment");
   Serial.println("BENCH: A/l left, S/r right, F/B both");
   Serial.println("CONTROL: +/- duration, X stop, ? status");
@@ -487,7 +487,7 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
   return validSamples[(validCount - 1) / 2];
 }
 
-// Read all sensors and classify the front scan.
+// Read and classify front, left and right sensor scans.
 
 void readAllDistances(float* front, float* left, float* right,
                       bool* frontClose, bool* frontTimeout,
@@ -837,7 +837,7 @@ void recordMeasurement(const char* input) {
     return;
   }
   const float target = (calibrationKind == '1') ? 10.0f :
-                       (calibrationKind == '2') ? 20.0f : 90.0f;
+                       (calibrationKind == '2') ? 15.0f : 90.0f;
   const float tolerance = (calibrationKind == '1') ? 0.5f :
                           (calibrationKind == '2') ? 1.0f : 5.0f;
   const double proposed = (double)calibrationTestMs * target / actual;
@@ -851,7 +851,7 @@ void recordMeasurement(const char* input) {
   const unsigned long nextMs = verified ? calibrationTestMs : corrected;
   switch (calibrationKind) {
     case '1': forward10Ms = nextMs; calibrated10 = verified; break;
-    case '2': forward20Ms = nextMs; calibrated20 = verified; break;
+    case '2': forward15Ms = nextMs; calibrated15 = verified; break;
     case 'Q': turnLeft90Ms = nextMs; calibratedLeft = verified; break;
     case 'E': turnRight90Ms = nextMs; calibratedRight = verified; break;
   }
@@ -914,7 +914,7 @@ void startAutonomousTile() {
   if (autonomousMode == 0 || motionRunning ||
       waitingForMeasurement || motionPurpose != NONE) return;
 
-  if (!poseKnown || !calibrated20 || !calibratedLeft ||
+  if (!poseKnown || !calibrated15 || !calibratedLeft ||
       !calibratedRight || !movementPermitted()) {
     autonomousMode = 0;
     Serial.println(
@@ -1061,7 +1061,7 @@ void startAutonomousTile() {
     addStep(TURN_LEFT, -1, 1, turnLeft90Ms);
   }
 
-  addStep(DRIVE, 1, 1, forward20Ms, 20.0f);
+  addStep(DRIVE, 1, 1, forward15Ms, 15.0f);
 
   Serial.printf(
     "AUTO: target (%d,%d), state=%d, visits=%u\n",
@@ -1101,8 +1101,8 @@ void processCommand(const char* command) {
       calibrationTestMs = forward10Ms;
       addStep(DRIVE, 1, 1, calibrationTestMs, 10.0f);
     } else if (calibrationKind == '2') {
-      calibrationTestMs = forward20Ms;
-      addStep(DRIVE, 1, 1, calibrationTestMs, 20.0f);
+      calibrationTestMs = forward15Ms;
+      addStep(DRIVE, 1, 1, calibrationTestMs, 15.0f);
     } else if (calibrationKind == 'Q') {
       calibrationTestMs = turnLeft90Ms;
       addStep(TURN_LEFT, -1, 1, calibrationTestMs);
@@ -1125,8 +1125,8 @@ void processCommand(const char* command) {
   }
   const char c = command[0];
   if (c == '?') {
-    Serial.printf("CAL: 10=%lu(%d) 20=%lu(%d) LEFT90=%lu(%d) RIGHT90=%lu(%d) ms\n",
-                  forward10Ms, calibrated10, forward20Ms, calibrated20,
+    Serial.printf("CAL: 10=%lu(%d) 15=%lu(%d) LEFT90=%lu(%d) RIGHT90=%lu(%d) ms\n",
+                  forward10Ms, calibrated10, forward15Ms, calibrated15,
                   turnLeft90Ms, calibratedLeft, turnRight90Ms, calibratedRight);
         Serial.printf(
       "POSE: %s X=%d,Y=%d heading=%d | auto=%u\n",
@@ -1178,7 +1178,7 @@ void processCommand(const char* command) {
   }
 
     if (c == 'N' || c == 'Z') {
-    if (!poseKnown || !calibrated20 ||
+    if (!poseKnown || !calibrated15 ||
         !calibratedLeft || !calibratedRight) {
       Serial.println(
         "AUTO LOCKED: verify C2/CQ/CE, align robot, send H"
@@ -1195,7 +1195,7 @@ void processCommand(const char* command) {
      
   stepCount = 0;
   if (c == 'U' || c == 'D' || c == 'L' || c == 'R') {
-    if (!poseKnown || !calibrated20) {
+    if (!poseKnown || !calibrated15) {
       Serial.println("GRID LOCKED: verify C2, then physically align and send H");
       return;
     }
@@ -1221,13 +1221,13 @@ void processCommand(const char* command) {
       addStep(TURN_RIGHT, 1, -1, turnRight90Ms);
     if (delta == 3)
       addStep(TURN_LEFT, -1, 1, turnLeft90Ms);
-    addStep(DRIVE, 1, 1, forward20Ms, 20.0f);
+    addStep(DRIVE, 1, 1, forward15Ms, 15.0f);
     beginPlan(GRID);
     return;
   }
   if (c == '1' || c == '2') {
-    addStep(DRIVE, 1, 1, c == '1' ? forward10Ms : forward20Ms,
-            c == '1' ? 10.0f : 20.0f);
+    addStep(DRIVE, 1, 1, c == '1' ? forward10Ms : forward15Ms,
+            c == '1' ? 10.0f : 15.0f);
     beginPlan(MANUAL);
     return;
   }
@@ -1332,7 +1332,7 @@ void requestRemoteMovement(const char* command) {
   }
 
   // Refuse uncalibrated forward or turning commands.
-  if ((command[0] == '2' && !calibrated20) ||
+  if ((command[0] == '2' && !calibrated15) ||
       (command[0] == 'Q' && !calibratedLeft) ||
       (command[0] == 'E' && !calibratedRight)) {
     Serial.println(
@@ -1357,7 +1357,7 @@ BLYNK_CONNECTED() {
 }
 
 
-// Forward: one calibrated 20 cm movement.
+// Forward: one calibrated 15 cm movement.
 BLYNK_WRITE(V2) {
   if (param.asInt() == 1) {
     requestRemoteMovement("2");
