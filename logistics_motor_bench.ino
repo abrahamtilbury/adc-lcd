@@ -358,6 +358,7 @@ void setup() {
   Serial.println("CONTROL: +/- duration, X stop, ? status");
   Serial.println("SERIAL: 115200 baud, Newline ending");
   Serial.println("AUTO: N = one action | Z = continuous ON/OFF (30s / 10 actions)");
+  Serial.println("ESCAPE: G arms one unsensed 15cm probe for the next local Z session (TEST ONLY)");
 
   Serial.printf(
     "Bench duration: %lu ms | Limits: %lu-%lu ms\n",
@@ -435,10 +436,10 @@ bool isFrontBlocked(float distanceCm) {
 // Median of five samples; require at least three valid echoes.
 
 float readFilteredDistanceCm(int trigPin, int echoPin,
-                             uint8_t* closeEchoCount = nullptr) {
-  if (closeEchoCount != nullptr) {
-    *closeEchoCount = 0;
-  }
+                             uint8_t* closeEchoCount = nullptr,
+                             uint8_t* timeoutEchoCount = nullptr) {
+  if (closeEchoCount != nullptr) *closeEchoCount = 0;
+  if (timeoutEchoCount != nullptr) *timeoutEchoCount = 0;
 
   const int SAMPLE_COUNT = 5;
   const int MIN_VALID = 3;
@@ -449,6 +450,9 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
     if (!enforceMotorInterlock()) return -1.0f;
 
     const float cm = readDistanceCm(trigPin, echoPin);
+    if (cm == -2.0f && timeoutEchoCount != nullptr) {
+      ++(*timeoutEchoCount);
+    }
 
     if (cm >= 0.0f) {
       validSamples[validCount++] = cm;
@@ -489,19 +493,22 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
 }
 
 
+// True only if all 15 raw ECHO attempts timed out (not merely an invalid median).
+bool lastFullScanAllTimeouts = false;
+
 // Read and classify front, left and right sensor scans.
-
-
 void readAllDistances(float* front, float* left, float* right,
                       bool* frontClose, bool* leftClose, bool* rightClose) {
   *front = *left = *right = -1.0f;
   *frontClose = *leftClose = *rightClose = false;
+  lastFullScanAllTimeouts = false;
 
   uint8_t closeCount = 0;
+  uint8_t frontTimeouts = 0, leftTimeouts = 0, rightTimeouts = 0;
 
   // Front sensor
   *front = readFilteredDistanceCm(
-      senseFront_PIN_TRIG, senseFront_PIN_ECHO, &closeCount);
+      senseFront_PIN_TRIG, senseFront_PIN_ECHO, &closeCount, &frontTimeouts);
   *frontClose = closeCount >= CLOSE_CONFIRMATIONS;
 
   if (!enforceMotorInterlock()) return;
@@ -510,7 +517,7 @@ void readAllDistances(float* front, float* left, float* right,
   // Left sensor
   closeCount = 0;
   *left = readFilteredDistanceCm(
-      senseLeft_PIN_TRIG, senseLeft_PIN_ECHO, &closeCount);
+      senseLeft_PIN_TRIG, senseLeft_PIN_ECHO, &closeCount, &leftTimeouts);
   *leftClose = closeCount >= CLOSE_CONFIRMATIONS;
 
   if (!enforceMotorInterlock()) return;
@@ -519,8 +526,10 @@ void readAllDistances(float* front, float* left, float* right,
   // Right sensor
   closeCount = 0;
   *right = readFilteredDistanceCm(
-      senseRight_PIN_TRIG, senseRight_PIN_ECHO, &closeCount);
+      senseRight_PIN_TRIG, senseRight_PIN_ECHO, &closeCount, &rightTimeouts);
   *rightClose = closeCount >= CLOSE_CONFIRMATIONS;
+  lastFullScanAllTimeouts = (frontTimeouts == 5 &&
+                             leftTimeouts == 5 && rightTimeouts == 5);
 }
 
 
@@ -566,6 +575,17 @@ unsigned long autoStartedMs = 0;
 unsigned long nextAutoScanMs = 0;
 uint8_t autoActionsCompleted = 0;
 
+// All-timeout recovery: one in-place 90-degree turn per session, then
+// optionally one 15 cm unsensed probe, locally armed with G before Z.
+// The probe is OFF after a reboot/session; only use it in a cleared,
+// supervised test area. It cannot guarantee collision avoidance.
+constexpr uint8_t ALL_TIMEOUT_CONFIRM_SCANS = 2;
+enum EscapeStage : uint8_t { ESCAPE_READY, ESCAPE_TURN_ATTEMPTED, ESCAPE_PROBE_USED };
+EscapeStage escapeStage = ESCAPE_READY;
+uint8_t allTimeoutScans = 0;
+bool escapeProbeArmed = false;
+bool escapeProbeActive = false;
+
 void cancelMotion(const char* message) {
   stopMotors();
   delay(5);  // Allow PWM shutdown to settle before readback.
@@ -573,6 +593,8 @@ void cancelMotion(const char* message) {
   const bool autoWasEnabled = continuousAutoEnabled;
   continuousAutoEnabled = false;
   continuousAutoFromBlynk = false;
+  escapeProbeArmed = false;
+  escapeProbeActive = false;
   if (autoWasEnabled && Blynk.connected()) Blynk.virtualWrite(V7, 0);
 
   // Check commanded PWM duty after shutdown.
@@ -620,6 +642,7 @@ void stopForFrontRecheck(const char* message) {
   stepIndex = 0;
   movingFrontCloseCount = 0;
   movingFrontInvalidCount = 0;
+  escapeProbeActive = false;
   nextAutoScanMs = millis() + AUTO_SCAN_PAUSE_MS;
 
   Serial.println(message);
@@ -646,7 +669,9 @@ bool beginStep() {
   
   // Every forward travel step requires a valid, sufficiently clear scan.
   stopMotors();
-  if (s.forwardCm > 0.0f) {
+  // Only the one-time, locally armed escape probe bypasses the
+  // stationary front-clearance precheck. Other forward steps do not.
+  if (s.forwardCm > 0.0f && !escapeProbeActive) {
     uint8_t closeEchoCount = 0;
     const float frontCm = readFilteredDistanceCm(
         senseFront_PIN_TRIG, senseFront_PIN_ECHO, &closeEchoCount);
@@ -746,8 +771,9 @@ void advanceMotion() {
       } else if (cm >= 0.0f) {
         movingFrontCloseCount = 0;
       }
-      // Abort any forward travel if sensing becomes unreliable.
-      if (cm < 0.0f) {
+      // The explicit escape probe may see timeouts; close echoes still stop it.
+      // Ordinary forward movements retain the two-invalid-echo stop.
+      if (cm < 0.0f && !escapeProbeActive) {
         if (++movingFrontInvalidCount >= 2) {
           stopForFrontRecheck("FRONT STOP: repeated invalid front echoes");
           return;
@@ -782,6 +808,7 @@ void advanceMotion() {
 
 
   motionRunning = false;
+  escapeProbeActive = false;
   ++stepIndex;
   if (stepIndex < stepCount) {
     beginStep();
@@ -891,6 +918,35 @@ bool startReactiveAction() {
                 frontCm, leftCm, rightCm,
                 (int)frontClose, (int)leftClose, (int)rightClose);
 
+  if (lastFullScanAllTimeouts) {
+    if (allTimeoutScans < ALL_TIMEOUT_CONFIRM_SCANS) ++allTimeoutScans;
+    if (continuousAutoEnabled &&
+        allTimeoutScans >= ALL_TIMEOUT_CONFIRM_SCANS) {
+      stepCount = 0;
+      if (escapeStage == ESCAPE_READY && calibratedLeft) {
+        escapeStage = ESCAPE_TURN_ATTEMPTED;
+        addStep(TURN_LEFT, -1, 1, turnLeft90Ms);
+        Serial.println("ESCAPE: 15/15 timeouts twice; one left 90-degree turn, then rescan");
+        beginPlan(AUTO);
+        return motionRunning;
+      }
+      if (escapeStage == ESCAPE_TURN_ATTEMPTED && escapeProbeArmed &&
+          !continuousAutoFromBlynk) {
+        escapeStage = ESCAPE_PROBE_USED;
+        escapeProbeArmed = false;
+        escapeProbeActive = true;
+        addStep(DRIVE, 1, 1, forward15Ms, 15.0f);
+        Serial.println("ESCAPE PROBE: one UNVERIFIED 15 cm step; supervise and use X/E-stop");
+        beginPlan(AUTO);
+        if (!motionRunning) escapeProbeActive = false;
+        return motionRunning;
+      }
+    }
+    Serial.println("AUTO: all 15 echoes timed out; waiting for another scan");
+    return false;
+  }
+  allTimeoutScans = 0;
+
   const bool frontClear = !frontClose && frontCm >= AUTO_CLEARANCE_CM;
   const bool leftClear = !leftClose && leftCm >= AUTO_CLEARANCE_CM;
   const bool rightClear = !rightClose && rightCm >= AUTO_CLEARANCE_CM;
@@ -936,6 +992,8 @@ void setContinuousAuto(bool enable, bool fromBlynk) {
     } else {
       continuousAutoEnabled = false;
       continuousAutoFromBlynk = false;
+      escapeProbeArmed = false;
+      escapeProbeActive = false;
       if (Blynk.connected()) Blynk.virtualWrite(V7, 0);
       Serial.println("AUTO OFF: stopped");
     }
@@ -966,6 +1024,9 @@ void setContinuousAuto(bool enable, bool fromBlynk) {
   autoStartedMs = millis();
   nextAutoScanMs = autoStartedMs + AUTO_SCAN_PAUSE_MS;
   autoActionsCompleted = 0;
+  escapeStage = ESCAPE_READY;
+  allTimeoutScans = 0;
+  escapeProbeActive = false;
   if (Blynk.connected()) Blynk.virtualWrite(V7, 1);
   Serial.println("AUTO ON: up to 10 actions or 30 seconds; X, Z or V7 OFF stops");
 }
@@ -1043,7 +1104,7 @@ void processCommand(const char* command) {
 
   if (command[1] != '\0') {
     
-    Serial.println("COMMANDS: ? status, N one action, Z auto ON/OFF, X stop");
+    Serial.println("COMMANDS: ? status, N one action, Z auto ON/OFF, G probe arm, X stop");
     Serial.println("MOVE: 1/2, Q/E | CAL: C1/C2/CQ/CE");
     Serial.println("BENCH: A/l left, S/r right, F/B both, +/- duration");
 
@@ -1057,6 +1118,9 @@ void processCommand(const char* command) {
     Serial.printf("NAV: reactive, no map | continuous=%s | actions=%u/%u\n",
                   continuousAutoEnabled ? "ON" : "OFF",
                   (unsigned)autoActionsCompleted, (unsigned)AUTO_ACTION_LIMIT);
+    Serial.printf("ESCAPE: probe=%s | stage=%u | all-timeout scans=%u\n",
+                  escapeProbeArmed ? "ARMED (TEST ONLY)" : "OFF",
+                  (unsigned)escapeStage, (unsigned)allTimeoutScans);
 
     Serial.printf(
       "INTERLOCKS: E-stop=%s | Fault=%s | Remote=%s\n",
@@ -1100,6 +1164,13 @@ void processCommand(const char* command) {
 
   if (continuousAutoEnabled) {
     Serial.println("AUTO RUNNING: Z, X or Blynk V7 OFF stops it");
+    return;
+  }
+  if (c == 'G') {
+    escapeProbeArmed = !escapeProbeArmed;
+    Serial.println(escapeProbeArmed
+        ? "ESCAPE PROBE ARMED: supervised test only; one blind 15 cm step maximum"
+        : "ESCAPE PROBE DISARMED");
     return;
   }
   if (c == 'N') {
