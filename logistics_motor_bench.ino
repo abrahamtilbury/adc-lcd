@@ -597,7 +597,7 @@ bool beginStep() {
 
   
   
-  // Autonomous forward travel requires a valid, sufficiently clear scan.
+  // Every forward travel step requires a valid, sufficiently clear scan.
   stopMotors();
   if (s.forwardCm > 0.0f) {
     uint8_t closeEchoCount = 0;
@@ -617,9 +617,8 @@ bool beginStep() {
       return false;
     }
 
-    if (motionPurpose == AUTO &&
-        (frontCm < AUTO_CLEARANCE_CM)) {
-      cancelMotion("AUTO STOP: clearance unknown or insufficient");
+    if (frontCm < AUTO_CLEARANCE_CM) {
+      cancelMotion("FRONT STOP: clearance unknown or insufficient");
       return false;
     }
   }
@@ -699,10 +698,10 @@ void advanceMotion() {
       } else if (cm >= 0.0f) {
         movingFrontCloseCount = 0;
       }
-      // Abort autonomous travel if sensing becomes unreliable.
-      if (cm < 0.0f && motionPurpose == AUTO) {
+      // Abort any forward travel if sensing becomes unreliable.
+      if (cm < 0.0f) {
         if (++movingFrontInvalidCount >= 2) {
-          cancelMotion("AUTO STOP: repeated invalid front echoes");
+          cancelMotion("FRONT STOP: repeated invalid front echoes");
           return;
         }
       } else if (cm >= 0.0f) {
