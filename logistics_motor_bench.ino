@@ -53,7 +53,7 @@ bool pwmModeEnabled = false;
 const uint8_t MOTOR_TEST_DUTY = 180; // Base PWM duty
 
 // Straight-line motor balance. Tune using measured lateral drift.
-constexpr float RIGHT_DRIVE_RATIO = 0.73f;
+constexpr float RIGHT_DRIVE_RATIO = 1.00f; // Diagnostic baseline: equal PWM duty
 
 uint8_t rightDriveDuty() {
   return (uint8_t)(MOTOR_TEST_DUTY * RIGHT_DRIVE_RATIO + 0.5f);
@@ -669,8 +669,9 @@ bool beginStep() {
   
   // Every forward travel step requires a valid, sufficiently clear scan.
   stopMotors();
-  // Only the one-time, locally armed escape probe bypasses the
-  // stationary front-clearance precheck. Other forward steps do not.
+  // Only the locally armed escape probe bypasses the front precheck.
+  // Supervised calibration still scans and stops on confirmed close objects,
+  // but can proceed when the sensor returns no valid median.
   if (s.forwardCm > 0.0f && !escapeProbeActive) {
     uint8_t closeEchoCount = 0;
     const float frontCm = readFilteredDistanceCm(
@@ -689,7 +690,8 @@ bool beginStep() {
       return false;
     }
 
-    if (frontCm < AUTO_CLEARANCE_CM) {
+    if (frontCm < AUTO_CLEARANCE_CM &&
+        !(motionPurpose == CALIBRATE && frontCm < 0.0f)) {
       stopForFrontRecheck("FRONT STOP: clearance unknown or insufficient");
       return false;
     }
@@ -771,9 +773,11 @@ void advanceMotion() {
       } else if (cm >= 0.0f) {
         movingFrontCloseCount = 0;
       }
-      // The explicit escape probe may see timeouts; close echoes still stop it.
-      // Ordinary forward movements retain the two-invalid-echo stop.
-      if (cm < 0.0f && !escapeProbeActive) {
+      // Escape probing and supervised calibration tolerate missing echoes.
+      // Confirmed close obstacles still stop both kinds of motion.
+      // Other forward movements retain the two-invalid-echo stop.
+      if (cm < 0.0f && !escapeProbeActive &&
+          motionPurpose != CALIBRATE) {
         if (++movingFrontInvalidCount >= 2) {
           stopForFrontRecheck("FRONT STOP: repeated invalid front echoes");
           return;
