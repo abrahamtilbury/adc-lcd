@@ -208,10 +208,10 @@ void setRightMotor(int direction, uint8_t requestedDuty) {
 constexpr unsigned long MOTION_MIN_MS = 50UL;
 constexpr unsigned long MOTION_MAX_MS = 4000UL;
 
-unsigned long forward10Ms = 1000UL;
-unsigned long forward15Ms = 1500UL;
-unsigned long turnLeft90Ms = 500UL;
-unsigned long turnRight90Ms = 500UL;
+unsigned long forward10Ms = 455UL;
+unsigned long forward15Ms = 666UL;
+unsigned long turnLeft90Ms = 1159UL;
+unsigned long turnRight90Ms = 728UL;
 
 bool calibrated10 = false;
 bool calibrated15 = false;
