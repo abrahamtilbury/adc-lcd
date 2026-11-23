@@ -1395,7 +1395,7 @@ void serviceBlynk() {
     lastConnectAttempt = now;
     Serial.println("BLYNK: attempting cloud connection");
 
-    const bool connected = Blynk.connect(250);
+    const bool connected = Blynk.connect(3000);
 
     Serial.println(
       connected ? "BLYNK: connection successful"
