@@ -586,6 +586,16 @@ uint8_t allTimeoutScans = 0;
 bool escapeProbeArmed = false;
 bool escapeProbeActive = false;
 
+// One automatic REVERSE pulse per local Z session after repeated front
+// timeout failures. No rear sensor: test only in a cleared, supervised area.
+constexpr unsigned long AUTO_REVERSE_RECOVERY_MS = 500UL;
+constexpr unsigned long AUTO_REVERSE_LATEST_START_MS = 25000UL;
+static_assert(AUTO_REVERSE_RECOVERY_MS >= MOTION_MIN_MS &&
+              AUTO_REVERSE_RECOVERY_MS <= MOTION_MAX_MS,
+              "Reverse recovery duration exceeds movement limits");
+uint8_t failedFrontRecoveryScans = 0;
+bool autoReverseRecoveryUsed = false;
+
 void cancelMotion(const char* message) {
   stopMotors();
   delay(5);  // Allow PWM shutdown to settle before readback.
@@ -692,6 +702,10 @@ bool beginStep() {
 
     if (frontCm < AUTO_CLEARANCE_CM &&
         !(motionPurpose == CALIBRATE && frontCm < 0.0f)) {
+      if (motionPurpose == AUTO && continuousAutoEnabled && frontCm < 0.0f &&
+          failedFrontRecoveryScans < 255) {
+        ++failedFrontRecoveryScans;
+      }
       stopForFrontRecheck("FRONT STOP: clearance unknown or insufficient");
       return false;
     }
@@ -779,6 +793,10 @@ void advanceMotion() {
       if (cm < 0.0f && !escapeProbeActive &&
           motionPurpose != CALIBRATE) {
         if (++movingFrontInvalidCount >= 2) {
+          if (motionPurpose == AUTO && continuousAutoEnabled &&
+              failedFrontRecoveryScans < 255) {
+            ++failedFrontRecoveryScans;
+          }
           stopForFrontRecheck("FRONT STOP: repeated invalid front echoes");
           return;
         }
@@ -820,6 +838,9 @@ void advanceMotion() {
   }
 
   if (motionPurpose == AUTO && continuousAutoEnabled) {
+    if (s.kind == DRIVE && s.leftDir == 1 && s.rightDir == 1) {
+      failedFrontRecoveryScans = 0; // Progress: a forward step completed.
+    }
     ++autoActionsCompleted;
     nextAutoScanMs = millis() + AUTO_SCAN_PAUSE_MS;
   }
@@ -896,6 +917,36 @@ void recordMeasurement(const char* input) {
 
 
 
+// A timed reverse is a last-resort local recovery action, not a proof
+// that the space behind the robot is clear. One pulse maximum per session.
+bool startAutoReverseRecovery() {
+  if (!continuousAutoEnabled || continuousAutoFromBlynk ||
+      autoReverseRecoveryUsed || !movementPermitted() ||
+      motionRunning || waitingForMeasurement || motionPurpose != NONE ||
+      millis() - autoStartedMs > AUTO_REVERSE_LATEST_START_MS ||
+      autoActionsCompleted >= AUTO_ACTION_LIMIT) {
+    return false;
+  }
+
+  autoReverseRecoveryUsed = true;
+  failedFrontRecoveryScans = 0;
+  stepCount = 0;
+  addStep(BENCH, -1, -1, AUTO_REVERSE_RECOVERY_MS);
+  Serial.println("AUTO RECOVERY: one 500 ms reverse pulse, then rescan; NO rear sensing");
+  beginPlan(AUTO);
+  return motionRunning;
+}
+
+// Avoid starting a navigation plan too close to the 30-second hard cutoff.
+bool autoPlanFitsSession(unsigned long planDurationMs) {
+  if (!continuousAutoEnabled) return true;  // Single-action N is not timed.
+  const unsigned long elapsed = millis() - autoStartedMs;
+  const unsigned long reserveMs = 750UL; // Front precheck and loop overhead.
+  return elapsed < AUTO_SESSION_LIMIT_MS &&
+         planDurationMs <= AUTO_SESSION_LIMIT_MS - elapsed &&
+         reserveMs <= AUTO_SESSION_LIMIT_MS - elapsed - planDurationMs;
+}
+
 // One bounded reactive decision; returns true only if motion begins.
 bool startReactiveAction() {
   if (motionRunning || waitingForMeasurement ||
@@ -923,19 +974,28 @@ bool startReactiveAction() {
                 (int)frontClose, (int)leftClose, (int)rightClose);
 
   if (lastFullScanAllTimeouts) {
+    if (failedFrontRecoveryScans < 255) ++failedFrontRecoveryScans;
     if (allTimeoutScans < ALL_TIMEOUT_CONFIRM_SCANS) ++allTimeoutScans;
     if (continuousAutoEnabled &&
         allTimeoutScans >= ALL_TIMEOUT_CONFIRM_SCANS) {
       stepCount = 0;
-      if (escapeStage == ESCAPE_READY && calibratedLeft) {
+      if (escapeStage == ESCAPE_READY && calibratedLeft &&
+          autoPlanFitsSession(turnLeft90Ms)) {
         escapeStage = ESCAPE_TURN_ATTEMPTED;
+        failedFrontRecoveryScans = 0; // Assess the new direction after turning.
         addStep(TURN_LEFT, -1, 1, turnLeft90Ms);
         Serial.println("ESCAPE: 15/15 timeouts twice; one left 90-degree turn, then rescan");
         beginPlan(AUTO);
         return motionRunning;
       }
+      // After the escape turn, try a bounded automatic reverse before the
+      // optional G-armed forward probe. A timeout does not latch a fault.
+      if (escapeStage == ESCAPE_TURN_ATTEMPTED &&
+          startAutoReverseRecovery()) {
+        return true;
+      }
       if (escapeStage == ESCAPE_TURN_ATTEMPTED && escapeProbeArmed &&
-          !continuousAutoFromBlynk) {
+          !continuousAutoFromBlynk && autoPlanFitsSession(forward15Ms)) {
         escapeStage = ESCAPE_PROBE_USED;
         escapeProbeArmed = false;
         escapeProbeActive = true;
@@ -954,6 +1014,12 @@ bool startReactiveAction() {
   const bool frontClear = !frontClose && frontCm >= AUTO_CLEARANCE_CM;
   const bool leftClear = !leftClose && leftCm >= AUTO_CLEARANCE_CM;
   const bool rightClear = !rightClose && rightCm >= AUTO_CLEARANCE_CM;
+
+  // Repeated failed front prechecks can occur despite a previously valid
+  // scan. Try one reverse pulse rather than endlessly repeating the plan.
+  if (failedFrontRecoveryScans >= 2 && startAutoReverseRecovery()) {
+    return true;
+  }
 
   stepCount = 0;
   if (frontClear) {
@@ -977,12 +1043,26 @@ bool startReactiveAction() {
       Serial.println("AUTO: turn right 90, then recheck front before driving");
     }
   } else {
+    if (frontCm < 0.0f && failedFrontRecoveryScans < 255) {
+      ++failedFrontRecoveryScans;
+    }
+    if (frontCm < 0.0f && failedFrontRecoveryScans >= 2 &&
+        startAutoReverseRecovery()) {
+      return true;
+    }
     Serial.println("AUTO STOP: no confirmed direction with sufficient clearance");
     return false;
   }
 
   // The existing beginStep() front precheck runs AFTER a turn, too.
   addStep(DRIVE, 1, 1, forward15Ms, 15.0f);
+  unsigned long planDurationMs = forward15Ms;
+  if (stepCount > 1) planDurationMs += steps[0].durationMs;
+  if (!autoPlanFitsSession(planDurationMs)) {
+    stepCount = 0;
+    Serial.println("AUTO: insufficient time remaining for a complete action");
+    return false;
+  }
   beginPlan(AUTO);
   return motionRunning;
 }
@@ -1031,6 +1111,8 @@ void setContinuousAuto(bool enable, bool fromBlynk) {
   escapeStage = ESCAPE_READY;
   allTimeoutScans = 0;
   escapeProbeActive = false;
+  failedFrontRecoveryScans = 0;
+  autoReverseRecoveryUsed = false;
   if (Blynk.connected()) Blynk.virtualWrite(V7, 1);
   Serial.println("AUTO ON: up to 10 actions or 30 seconds; X, Z or V7 OFF stops");
 }
@@ -1125,6 +1207,10 @@ void processCommand(const char* command) {
     Serial.printf("ESCAPE: probe=%s | stage=%u | all-timeout scans=%u\n",
                   escapeProbeArmed ? "ARMED (TEST ONLY)" : "OFF",
                   (unsigned)escapeStage, (unsigned)allTimeoutScans);
+    Serial.printf("REVERSE RECOVERY: used=%s | failed-front=%u | duration=%lu ms\n",
+                  autoReverseRecoveryUsed ? "YES" : "NO",
+                  (unsigned)failedFrontRecoveryScans,
+                  AUTO_REVERSE_RECOVERY_MS);
 
     Serial.printf(
       "INTERLOCKS: E-stop=%s | Fault=%s | Remote=%s\n",
