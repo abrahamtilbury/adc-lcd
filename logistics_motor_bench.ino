@@ -910,6 +910,15 @@ void setContinuousAuto(bool enable, bool fromBlynk) {
   }
 
   if (continuousAutoEnabled) return;
+
+  // Remote autonomy must obey the same commissioning lock as V2-V5.
+  // This does not disable local serial N/Z testing or the remote V6 stop.
+  if (fromBlynk && !ENABLE_BLYNK_MOVEMENT) {
+    Serial.println("AUTO LOCKED: Blynk movement disabled for commissioning");
+    if (Blynk.connected()) Blynk.virtualWrite(V7, 0);
+    return;
+  }
+
   if (!movementPermitted() || motionRunning || waitingForMeasurement ||
       motionPurpose != NONE || !calibrated15 || !calibratedLeft ||
       !calibratedRight ||
