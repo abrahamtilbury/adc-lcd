@@ -593,6 +593,39 @@ void cancelMotion(const char* message) {
   Serial.println(message);
 }
 
+// Sensor uncertainty is recoverable during continuous autonomy, not a motor fault.
+// Stop and verify motor PWM is zero before scheduling another stationary scan.
+// Manual movement and single-action N still cancel on a failed front check.
+void stopForFrontRecheck(const char* message) {
+  if (motionPurpose != AUTO || !continuousAutoEnabled ||
+      !movementPermitted()) {
+    cancelMotion(message);
+    return;
+  }
+
+  stopMotors();
+  delay(5);
+  if (pwmModeEnabled &&
+      (ledcRead(leftMotor_PWM) != 0 ||
+       ledcRead(rightMotor_PWM) != 0)) {
+    latchMotorFault();
+    cancelMotion("STOP PWM DUTY READBACK NONZERO: reset required");
+    return;
+  }
+
+  motionRunning = false;
+  remoteMotionActive = false;
+  motionPurpose = NONE;
+  stepCount = 0;
+  stepIndex = 0;
+  movingFrontCloseCount = 0;
+  movingFrontInvalidCount = 0;
+  nextAutoScanMs = millis() + AUTO_SCAN_PAUSE_MS;
+
+  Serial.println(message);
+  Serial.println("AUTO: stopped for front recheck; retry scan in 500 ms");
+}
+
 void addStep(MotionKind kind, int left, int right,
              unsigned long duration, float forwardCm = 0.0f) {
   steps[stepCount++] = {kind, left, right, duration, forwardCm};
@@ -627,12 +660,12 @@ bool beginStep() {
                   frontCm, (unsigned)closeEchoCount);
 
     if (closeEchoCount >= CLOSE_CONFIRMATIONS) {
-      cancelMotion("FRONT CLOSE OBSTACLE CONFIRMED: STOP");
+      stopForFrontRecheck("FRONT CLOSE OBSTACLE CONFIRMED: STOP");
       return false;
     }
 
     if (frontCm < AUTO_CLEARANCE_CM) {
-      cancelMotion("FRONT STOP: clearance unknown or insufficient");
+      stopForFrontRecheck("FRONT STOP: clearance unknown or insufficient");
       return false;
     }
   }
@@ -707,7 +740,7 @@ void advanceMotion() {
       if (isFrontBlocked(cm)) {
         ++movingFrontCloseCount;
         if (movingFrontCloseCount >= CLOSE_CONFIRMATIONS) {
-          cancelMotion("CONFIRMED FRONT OBSTACLE <=15 cm: STOP");
+          stopForFrontRecheck("CONFIRMED FRONT OBSTACLE <=15 cm: STOP");
           return;
         }
       } else if (cm >= 0.0f) {
@@ -716,7 +749,7 @@ void advanceMotion() {
       // Abort any forward travel if sensing becomes unreliable.
       if (cm < 0.0f) {
         if (++movingFrontInvalidCount >= 2) {
-          cancelMotion("FRONT STOP: repeated invalid front echoes");
+          stopForFrontRecheck("FRONT STOP: repeated invalid front echoes");
           return;
         }
       } else if (cm >= 0.0f) {
@@ -959,8 +992,15 @@ void serviceContinuousAuto() {
   if (motionRunning || waitingForMeasurement || motionPurpose != NONE) return;
   if ((int32_t)(now - nextAutoScanMs) < 0) return;
 
-  if (!startReactiveAction()) {
-    cancelMotion("AUTO STOP: no verified clear action available");
+  if (!startReactiveAction() && continuousAutoEnabled) {
+    if (!movementPermitted()) {
+      cancelMotion("AUTO STOP: interlock during scan");
+      return;
+    }
+    // A scan without a verified direction does not disable continuous autonomy.
+    // Keep the existing 30-second / 10-action supervised limits in effect.
+    nextAutoScanMs = millis() + AUTO_SCAN_PAUSE_MS;
+    Serial.println("AUTO: no verified clear action; rescan in 500 ms");
   }
 }
 
