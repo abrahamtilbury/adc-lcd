@@ -357,7 +357,7 @@ void setup() {
   Serial.println("BENCH: A/l left, S/r right, F/B both");
   Serial.println("CONTROL: +/- duration, X stop, ? status");
   Serial.println("SERIAL: 115200 baud, Newline ending");
-  Serial.println("AUTO: N = one scan/turn/drive action | Z = disabled");
+  Serial.println("AUTO: N = one action | Z = continuous ON/OFF (30s / 10 actions)");
 
   Serial.printf(
     "Bench duration: %lu ms | Limits: %lu-%lu ms\n",
@@ -556,10 +556,24 @@ MotionPurpose motionPurpose = NONE;
 char calibrationKind = 0;
 unsigned long calibrationTestMs = 0;
 
+// Continuous mode is opt-in, time-bounded and OFF after each reboot.
+constexpr unsigned long AUTO_SCAN_PAUSE_MS = 500UL;
+constexpr unsigned long AUTO_SESSION_LIMIT_MS = 30000UL;
+constexpr uint8_t AUTO_ACTION_LIMIT = 10;
+bool continuousAutoEnabled = false;
+bool continuousAutoFromBlynk = false;
+unsigned long autoStartedMs = 0;
+unsigned long nextAutoScanMs = 0;
+uint8_t autoActionsCompleted = 0;
+
 void cancelMotion(const char* message) {
   stopMotors();
   delay(5);  // Allow PWM shutdown to settle before readback.
   remoteMotionActive = false;
+  const bool autoWasEnabled = continuousAutoEnabled;
+  continuousAutoEnabled = false;
+  continuousAutoFromBlynk = false;
+  if (autoWasEnabled && Blynk.connected()) Blynk.virtualWrite(V7, 0);
 
   // Check commanded PWM duty after shutdown.
   if (pwmModeEnabled &&
@@ -694,6 +708,7 @@ void advanceMotion() {
         ++movingFrontCloseCount;
         if (movingFrontCloseCount >= CLOSE_CONFIRMATIONS) {
           cancelMotion("CONFIRMED FRONT OBSTACLE <=15 cm: STOP");
+          return;
         }
       } else if (cm >= 0.0f) {
         movingFrontCloseCount = 0;
@@ -740,6 +755,10 @@ void advanceMotion() {
     return;
   }
 
+  if (motionPurpose == AUTO && continuousAutoEnabled) {
+    ++autoActionsCompleted;
+    nextAutoScanMs = millis() + AUTO_SCAN_PAUSE_MS;
+  }
   if (motionPurpose == CALIBRATE) {
     waitingForMeasurement = true;
     Serial.printf("CALIBRATION %c: enter measured %s, then ENTER (X cancels):\n",
@@ -813,14 +832,14 @@ void recordMeasurement(const char* input) {
 
 
 
-// One bounded reactive decision. Stop and scan again after the action.
-void startReactiveAction() {
+// One bounded reactive decision; returns true only if motion begins.
+bool startReactiveAction() {
   if (motionRunning || waitingForMeasurement ||
-      motionPurpose != NONE || !movementPermitted()) return;
+      motionPurpose != NONE || !movementPermitted()) return false;
 
   if (!calibrated15) {
     Serial.println("AUTO LOCKED: calibrate and verify C2 first");
-    return;
+    return false;
   }
 
   stopMotors();
@@ -832,7 +851,7 @@ void startReactiveAction() {
 
   if (!enforceMotorInterlock()) {
     Serial.println("AUTO STOP: interlock during scan");
-    return;
+    return false;
   }
 
   Serial.printf("AUTO SCAN: F=%.1f L=%.1f R=%.1f | close=%d,%d,%d\n",
@@ -852,29 +871,96 @@ void startReactiveAction() {
     if (chooseLeft) {
       if (!calibratedLeft) {
         Serial.println("AUTO LOCKED: verify CQ (left 90) first");
-        return;
+        return false;
       }
       addStep(TURN_LEFT, -1, 1, turnLeft90Ms);
       Serial.println("AUTO: turn left 90, then recheck front before driving");
     } else {
       if (!calibratedRight) {
         Serial.println("AUTO LOCKED: verify CE (right 90) first");
-        return;
+        return false;
       }
       addStep(TURN_RIGHT, 1, -1, turnRight90Ms);
       Serial.println("AUTO: turn right 90, then recheck front before driving");
     }
   } else {
     Serial.println("AUTO STOP: no confirmed direction with sufficient clearance");
-    return;
+    return false;
   }
 
   // The existing beginStep() front precheck runs AFTER a turn, too.
   addStep(DRIVE, 1, 1, forward15Ms, 15.0f);
   beginPlan(AUTO);
+  return motionRunning;
+}
+
+// Z toggles continuous autonomy locally; Blynk V7 provides the same switch.
+// Both paths require all three measured movement calibrations to be verified.
+void setContinuousAuto(bool enable, bool fromBlynk) {
+  if (!enable) {
+    if (continuousAutoEnabled && motionPurpose == AUTO && motionRunning) {
+      cancelMotion("AUTO OFF: motion cancelled");
+    } else {
+      continuousAutoEnabled = false;
+      continuousAutoFromBlynk = false;
+      if (Blynk.connected()) Blynk.virtualWrite(V7, 0);
+      Serial.println("AUTO OFF: stopped");
+    }
+    return;
+  }
+
+  if (continuousAutoEnabled) return;
+  if (!movementPermitted() || motionRunning || waitingForMeasurement ||
+      motionPurpose != NONE || !calibrated15 || !calibratedLeft ||
+      !calibratedRight ||
+      (fromBlynk && (WiFi.status() != WL_CONNECTED || !Blynk.connected()))) {
+    Serial.println("AUTO LOCKED: clear interlocks and verify C2, CQ and CE");
+    if (Blynk.connected()) Blynk.virtualWrite(V7, 0);
+    return;
+  }
+
+  continuousAutoEnabled = true;
+  continuousAutoFromBlynk = fromBlynk;
+  autoStartedMs = millis();
+  nextAutoScanMs = autoStartedMs + AUTO_SCAN_PAUSE_MS;
+  autoActionsCompleted = 0;
+  if (Blynk.connected()) Blynk.virtualWrite(V7, 1);
+  Serial.println("AUTO ON: up to 10 actions or 30 seconds; X, Z or V7 OFF stops");
+}
+
+// Run only when no motion is active. Never queue a second motion plan.
+void serviceContinuousAuto() {
+  if (!continuousAutoEnabled) return;
+
+  const unsigned long now = millis();
+  if (!movementPermitted()) {
+    cancelMotion("AUTO STOP: interlock active");
+    return;
+  }
+  if (continuousAutoFromBlynk &&
+      (WiFi.status() != WL_CONNECTED || !Blynk.connected())) {
+    cancelMotion("AUTO STOP: Blynk disconnected");
+    return;
+  }
+  if (now - autoStartedMs >= AUTO_SESSION_LIMIT_MS ||
+      autoActionsCompleted >= AUTO_ACTION_LIMIT) {
+    cancelMotion("AUTO STOP: supervised session limit reached");
+    return;
+  }
+  if (motionRunning || waitingForMeasurement || motionPurpose != NONE) return;
+  if ((int32_t)(now - nextAutoScanMs) < 0) return;
+
+  if (!startReactiveAction()) {
+    cancelMotion("AUTO STOP: no verified clear action available");
+  }
 }
 
 void processCommand(const char* command) {
+  // Z can turn autonomy OFF even while a movement is underway.
+  if (command[0] == 'Z' && command[1] == '\0') {
+    setContinuousAuto(!continuousAutoEnabled, false);
+    return;
+  }
   if (waitingForMeasurement) {
     recordMeasurement(command);
     return;
@@ -908,7 +994,7 @@ void processCommand(const char* command) {
 
   if (command[1] != '\0') {
     
-    Serial.println("COMMANDS: ? status, N reactive action, Z disabled, X stop");
+    Serial.println("COMMANDS: ? status, N one action, Z auto ON/OFF, X stop");
     Serial.println("MOVE: 1/2, Q/E | CAL: C1/C2/CQ/CE");
     Serial.println("BENCH: A/l left, S/r right, F/B both, +/- duration");
 
@@ -919,7 +1005,9 @@ void processCommand(const char* command) {
     Serial.printf("CAL: 10=%lu(%d) 15=%lu(%d) LEFT90=%lu(%d) RIGHT90=%lu(%d) ms\n",
                   forward10Ms, calibrated10, forward15Ms, calibrated15,
                   turnLeft90Ms, calibratedLeft, turnRight90Ms, calibratedRight);
-    Serial.println("NAV: reactive sensing only; no map or odometry");
+    Serial.printf("NAV: reactive, no map | continuous=%s | actions=%u/%u\n",
+                  continuousAutoEnabled ? "ON" : "OFF",
+                  (unsigned)autoActionsCompleted, (unsigned)AUTO_ACTION_LIMIT);
 
     Serial.printf(
       "INTERLOCKS: E-stop=%s | Fault=%s | Remote=%s\n",
@@ -961,12 +1049,12 @@ void processCommand(const char* command) {
     return;
   }
 
-  if (c == 'N') {
-    startReactiveAction();
+  if (continuousAutoEnabled) {
+    Serial.println("AUTO RUNNING: Z, X or Blynk V7 OFF stops it");
     return;
   }
-  if (c == 'Z') {
-    Serial.println("CONTINUOUS AUTO DISABLED: drivetrain not verified");
+  if (c == 'N') {
+    startReactiveAction();
     return;
   }
 
@@ -1024,7 +1112,8 @@ void publishBlynkTelemetry() {
       estopLatched ? "SOFTWARE E-STOP" :
       remoteStopLatched ? "REMOTE STOP LATCHED" :
       motorFaultLatched ? "MOTOR FAULT" :
-      motionRunning ? "MOVING" :
+      motionRunning ? (motionPurpose == AUTO ? "AUTO MOVING" : "MOVING") :
+      continuousAutoEnabled ? "AUTO SCANNING" :
       "IDLE";
 
   Blynk.virtualWrite(V0, frontCm);
@@ -1041,7 +1130,13 @@ void serviceBlynk() {
   const wl_status_t wifiStatus = WiFi.status();
   const unsigned long now = millis();
 
-  // Cancel remote movement if connectivity is lost.
+  // A cloud-started autonomous session must stop on lost connectivity.
+  if (continuousAutoEnabled && continuousAutoFromBlynk &&
+      (wifiStatus != WL_CONNECTED || !Blynk.connected())) {
+    cancelMotion("AUTO STOP: Blynk disconnected");
+  }
+
+  // Cancel individual remote movements if connectivity is lost.
   if (remoteMotionActive &&
       (wifiStatus != WL_CONNECTED || !Blynk.connected())) {
     cancelMotion("BLYNK DISCONNECTED: remote movement cancelled");
@@ -1096,6 +1191,7 @@ void requestRemoteMovement(const char* command) {
   if (!ENABLE_BLYNK_MOVEMENT ||
       !Blynk.connected() ||
       !movementPermitted() ||
+      continuousAutoEnabled ||
       motionRunning ||
       waitingForMeasurement ||
       motionPurpose != NONE) {
@@ -1123,10 +1219,13 @@ void requestRemoteMovement(const char* command) {
 }
 
 
-// Synchronise STOP only.
-// Never replay movement buttons when reconnecting.
+// Synchronise the latched STOP only. Never replay ON or movement after reconnect.
 BLYNK_CONNECTED() {
   Serial.println("BLYNK ONLINE");
+  if (continuousAutoFromBlynk) {
+    cancelMotion("AUTO STOP: cloud reconnected; re-enable explicitly");
+  }
+  Blynk.virtualWrite(V7, continuousAutoEnabled ? 1 : 0);
   Blynk.syncVirtual(V6);
 }
 
@@ -1163,6 +1262,11 @@ BLYNK_WRITE(V5) {
 }
 
 
+// Continuous autonomous mode: Blynk switch V7, 1=ON and 0=OFF.
+BLYNK_WRITE(V7) {
+  setContinuousAuto(param.asInt() == 1, true);
+}
+
 // Remote stop: latched until ESP32 reset.
 BLYNK_WRITE(V6) {
   if (param.asInt() == 1) {
@@ -1181,7 +1285,7 @@ void loop() {
   static bool discardingLine = false;
 
   if (!enforceMotorInterlock()) {
-    if (motionRunning || waitingForMeasurement)
+    if (motionRunning || waitingForMeasurement || continuousAutoEnabled)
       cancelMotion("E-STOP/MOTOR FAULT: STOP; reset required");
     if (!estopReported) {
       Serial.println("INTERLOCK LATCHED: reset required");
@@ -1231,6 +1335,6 @@ void loop() {
   }
 }
    advanceMotion();
-   
+   serviceContinuousAuto();
 
 }
