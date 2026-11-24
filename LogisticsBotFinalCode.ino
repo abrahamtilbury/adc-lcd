@@ -1531,7 +1531,7 @@ void loop() {
        discardingLine = true;
        Serial.println("SERIAL INPUT TOO LONG: discarded");
      }
-}
-    advanceMotion();
-    serviceContinuousAuto();
+  }
+  advanceMotion();
+  serviceContinuousAuto();
 }
