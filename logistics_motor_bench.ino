@@ -10,7 +10,7 @@ const char WIFI_SSID[] = "Abe's iPhone";
 const char WIFI_PASSWORD[] = "nintendo";
 
 // Keep remote movement locked until safety tests pass.
-constexpr bool ENABLE_BLYNK_MOVEMENT = false;
+constexpr bool ENABLE_BLYNK_MOVEMENT = true;
 constexpr unsigned long BLYNK_RECONNECT_MS = 5000UL;
 
 BlynkTimer blynkTimer;
