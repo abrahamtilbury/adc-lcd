@@ -5,7 +5,8 @@
 #include <BlynkSimpleEsp32.h>
 #include <math.h>
 #include <stdlib.h>
-#include <Preferences.h>
+#include <nvs.h>
+#include <esp_err.h>
 const char WIFI_SSID[] = "Abe's iPhone";
 const char WIFI_PASSWORD[] = "nintendo";
 
@@ -225,8 +226,7 @@ bool calibratedRight = false;
    VERIFIED CALIBRATION STORAGE - ESP32 NVS FLASH
    ============================================================ */
 
-Preferences calibrationStore;
-bool calibrationStorageReady = false;
+constexpr char CAL_NAMESPACE[] = "logbotcal";
 
 // Increment this if motor hardware or timing behaviour changes.
 constexpr uint32_t CAL_PROFILE_VERSION = 1;
@@ -238,19 +238,79 @@ uint32_t calibrationProfile() {
          (uint32_t)rightDriveDuty();
 }
 
-// Each timing has its own motor profile marker. This prevents a profile
-// change from re-verifying other timings merely because one was recalibrated.
-// Older sketches used the shared "profile" key; read that only for legacy
-// timings that do not have a per-calibration marker.
-void restoreCalibration(const char* key, const char* profileKey,
-                        unsigned long& duration, bool& verified) {
-  const unsigned long saved = calibrationStore.getULong(key, 0);
-  const uint32_t currentProfile = calibrationProfile();
-  const uint32_t savedProfile = calibrationStore.isKey(profileKey)
-      ? calibrationStore.getULong(profileKey, 0)
-      : calibrationStore.getULong("profile", 0);
+void reportCalNvsError(const char* operation, const char* key, esp_err_t err) {
+  Serial.printf("CAL NVS %s [%s]: %s (0x%x)\n",
+                operation, key, esp_err_to_name(err), (unsigned)err);
+}
 
-  if (savedProfile == currentProfile &&
+// Open a fresh handle, commit the value, close it, then verify through
+// a separate read-only handle. Report native NVS errors rather than defaults.
+bool writeCalibrationValue(const char* key, uint32_t value) {
+  nvs_handle_t handle;
+  esp_err_t err = nvs_open(CAL_NAMESPACE, NVS_READWRITE, &handle);
+  if (err != ESP_OK) {
+    reportCalNvsError("open RW", key, err);
+    return false;
+  }
+
+  err = nvs_set_u32(handle, key, value);
+  if (err != ESP_OK) {
+    reportCalNvsError("set", key, err);
+    nvs_close(handle);
+    return false;
+  }
+
+  err = nvs_commit(handle);
+  nvs_close(handle);
+  if (err != ESP_OK) {
+    reportCalNvsError("commit", key, err);
+    return false;
+  }
+
+  err = nvs_open(CAL_NAMESPACE, NVS_READONLY, &handle);
+  if (err != ESP_OK) {
+    reportCalNvsError("reopen RO", key, err);
+    return false;
+  }
+
+  uint32_t readback = 0;
+  err = nvs_get_u32(handle, key, &readback);
+  nvs_close(handle);
+  if (err != ESP_OK) {
+    reportCalNvsError("read after reopen", key, err);
+    return false;
+  }
+
+  Serial.printf("CAL NVS %s: committed; reopened read=%lu expected=%lu | %s\n",
+                key, (unsigned long)readback, (unsigned long)value,
+                readback == value ? "OK" : "FAIL");
+  return readback == value;
+}
+
+// Retain existing keys and legacy profile compatibility, but only fall
+// back to the shared profile when the individual key is genuinely absent.
+void restoreCalibration(nvs_handle_t handle, const char* key,
+                        const char* profileKey,
+                        unsigned long& duration, bool& verified) {
+  verified = false;
+  uint32_t saved = 0;
+  uint32_t savedProfile = 0;
+  esp_err_t err = nvs_get_u32(handle, key, &saved);
+  if (err != ESP_OK) {
+    reportCalNvsError("restore timing", key, err);
+    return;
+  }
+
+  err = nvs_get_u32(handle, profileKey, &savedProfile);
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    err = nvs_get_u32(handle, "profile", &savedProfile);
+  }
+  if (err != ESP_OK) {
+    reportCalNvsError("restore profile", profileKey, err);
+    return;
+  }
+
+  if (savedProfile == calibrationProfile() &&
       saved >= MOTION_MIN_MS && saved <= MOTION_MAX_MS) {
     duration = saved;
     verified = true;
@@ -258,26 +318,19 @@ void restoreCalibration(const char* key, const char* profileKey,
 }
 
 void loadSavedCalibrations() {
-  calibrationStorageReady = calibrationStore.begin("logbotcal", false);
-
-  if (!calibrationStorageReady) {
-    Serial.println("CAL FLASH ERROR: defaults retained");
+  nvs_handle_t handle;
+  const esp_err_t err = nvs_open(CAL_NAMESPACE, NVS_READONLY, &handle);
+  if (err != ESP_OK) {
+    reportCalNvsError("load open RO", CAL_NAMESPACE, err);
+    Serial.println("CAL FLASH: defaults retained, unverified");
     return;
   }
 
-  const uint32_t currentProfile = calibrationProfile();
-  const uint32_t legacyProfile = calibrationStore.getULong("profile", 0);
-  Serial.printf("CAL FLASH PROFILE: legacy=%lu current=%lu (no erase)\n",
-                (unsigned long)legacyProfile,
-                (unsigned long)currentProfile);
-  if (legacyProfile != currentProfile) {
-    Serial.println("CAL FLASH: old profile differs; only matching per-calibration records restore");
-  }
-
-  restoreCalibration("c1", "c1sig", forward10Ms, calibrated10);
-  restoreCalibration("c2", "c2sig", forward15Ms, calibrated15);
-  restoreCalibration("cq", "cqsig", turnLeft90Ms, calibratedLeft);
-  restoreCalibration("ce", "cesig", turnRight90Ms, calibratedRight);
+  restoreCalibration(handle, "c1", "c1sig", forward10Ms, calibrated10);
+  restoreCalibration(handle, "c2", "c2sig", forward15Ms, calibrated15);
+  restoreCalibration(handle, "cq", "cqsig", turnLeft90Ms, calibratedLeft);
+  restoreCalibration(handle, "ce", "cesig", turnRight90Ms, calibratedRight);
+  nvs_close(handle);
 
   Serial.printf(
     "CAL FLASH: C1=%s C2=%s CQ=%s CE=%s\n",
@@ -287,7 +340,6 @@ void loadSavedCalibrations() {
     calibratedRight ? "RESTORED" : "UNVERIFIED"
   );
 }
-
 
 /* ============================================================
    4. SETUP - INITIALISE HARDWARE AND SAFETY INPUTS
@@ -898,53 +950,28 @@ void recordMeasurement(const char* input) {
       calibrationKind == 'Q' ? "cqsig" :
       calibrationKind == 'E' ? "cesig" : nullptr;
 
-  if (calibrationStorageReady && calKey != nullptr && profileKey != nullptr) {
+  if (calKey != nullptr && profileKey != nullptr) {
+    // Invalidate the old proof BEFORE changing the stored timing.
+    // If this fails, do not overwrite the timing or certify a new profile.
+    const bool invalidated = writeCalibrationValue(profileKey, 0);
+    if (!invalidated) {
+      Serial.println("CAL FLASH WARNING: old proof invalidation not confirmed");
+    }
+
     if (verified) {
-      const uint32_t profile = calibrationProfile();
-      // A readback is required: a RAM-only (1) is not proof of flash storage.
-      const size_t timingBytes = calibrationStore.putULong(calKey, nextMs);
-      const unsigned long timingReadback = calibrationStore.getULong(calKey, 0);
-      const bool timingOK = timingBytes == 4 && timingReadback == nextMs;
+      const bool timingOK = invalidated &&
+          writeCalibrationValue(calKey, (uint32_t)nextMs);
+      const bool saved = timingOK &&
+          writeCalibrationValue(profileKey, calibrationProfile());
 
-      // Do not certify a profile if its timing could not be stored correctly.
-      size_t profileBytes = 0;
-      if (timingOK) {
-        profileBytes = calibrationStore.putULong(profileKey, profile);
-      }
-      const unsigned long profileReadback = calibrationStore.getULong(profileKey, 0);
-
-      Serial.printf("CAL NVS %s: timing write=%u/4 bytes | read=%lu expected=%lu | %s\n",
-                    calKey, (unsigned)timingBytes, timingReadback, nextMs,
-                    timingOK ? "OK" : "FAIL");
-      Serial.printf("CAL NVS %s: profile write=%u/4 bytes | read=%lu expected=%lu | %s\n",
-                    profileKey, (unsigned)profileBytes, profileReadback,
-                    (unsigned long)profile,
-                    !timingOK ? "SKIPPED (timing failed)" :
-                    (profileBytes == 4 && profileReadback == profile) ? "OK" : "FAIL");
-
-      const bool saved = timingOK && profileBytes == 4 && profileReadback == profile;
       if (saved) {
         Serial.printf("CAL FLASH SAVED + CHECKED: %s = %lu ms\n",
                       calKey, nextMs);
       } else {
-        Serial.printf("CAL FLASH SAVE FAILED: %s not confirmed in NVS\n", calKey);
-      }
-    } else {
-      // Retain the old measurement for diagnosis, but invalidate its proof.
-      // Writing zero also overrides the legacy shared-profile fallback.
-      const size_t invalidationBytes = calibrationStore.putULong(profileKey, 0UL);
-      const unsigned long invalidationReadback =
-          calibrationStore.getULong(profileKey, 0xFFFFFFFFUL);
-      const bool invalidated = invalidationBytes == 4 && invalidationReadback == 0;
-      Serial.printf("CAL NVS %s: invalidate write=%u/4 bytes | read=%lu expected=0 | %s\n",
-                    profileKey, (unsigned)invalidationBytes, invalidationReadback,
-                    invalidated ? "OK" : "FAIL");
-      if (!invalidated) {
-        Serial.printf("CAL FLASH WARNING: %s invalidation not confirmed\n", calKey);
+        Serial.printf("CAL FLASH SAVE FAILED: %s not confirmed in NVS; RAM only\n",
+                      calKey);
       }
     }
-  } else if (verified) {
-    Serial.println("CAL FLASH SAVE FAILED: storage unavailable, RAM only");
   }
 
   Serial.printf("MEASURED %.1f, TARGET %.1f => NEXT TEST %lu ms; %s\n",
@@ -1392,10 +1419,14 @@ void serviceBlynk() {
     cancelMotion("BLYNK DISCONNECTED: remote movement cancelled");
   }
 
-  // Report changes immediately; report offline status every 10 seconds.
-  if (wifiStatus != lastWifiStatus ||
+  // Report connectivity transitions immediately; rate-limit offline changes.
+  const bool connectivityChanged =
+      (wifiStatus == WL_CONNECTED) != (lastWifiStatus == WL_CONNECTED);
+  static bool wifiReported = false;
+  if (!wifiReported || connectivityChanged ||
       (wifiStatus != WL_CONNECTED &&
        now - lastWifiReportMs >= 10000UL)) {
+    wifiReported = true;
 
     if (wifiStatus == WL_CONNECTED) {
       Serial.print("WIFI CONNECTED | IP=");
