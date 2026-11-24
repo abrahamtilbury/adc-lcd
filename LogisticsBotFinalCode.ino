@@ -203,27 +203,32 @@ void setRightMotor(int direction, uint8_t requestedDuty) {
 /* ============================================================
    3. TIMED MOVEMENT CALIBRATION
    ============================================================ */
-// Manually recorded movement timings; no flash storage or reset recalibration.
+// RAM-only calibration. Reboot restores the source defaults.
 // Re-measure after changing motors, power, wheel load or test surface.
 constexpr unsigned long MOTION_MIN_MS = 50UL;
 constexpr unsigned long MOTION_MAX_MS = 4000UL;
 
-// Most recently physically verified timings (C1=460 ms, C2/CQ/CE as recorded).
-constexpr unsigned long forward10Ms = 460UL;
-constexpr unsigned long forward15Ms = 768UL;
-constexpr unsigned long turnLeft90Ms = 770UL;
-constexpr unsigned long turnRight90Ms = 588UL;
+constexpr unsigned long DEFAULT_FORWARD10_MS = 460UL;
+constexpr unsigned long DEFAULT_FORWARD15_MS = 768UL;
+constexpr unsigned long DEFAULT_LEFT90_MS = 770UL;
+constexpr unsigned long DEFAULT_RIGHT90_MS = 588UL;
+
+// All calibrated movement paths use these writable session timings.
+unsigned long forward10Ms = DEFAULT_FORWARD10_MS;
+unsigned long forward15Ms = DEFAULT_FORWARD15_MS;
+unsigned long turnLeft90Ms = DEFAULT_LEFT90_MS;
+unsigned long turnRight90Ms = DEFAULT_RIGHT90_MS;
 
 static_assert(MOTOR_TEST_DUTY == 180 && RIGHT_DRIVE_RATIO == 1.00f,
               "PWM changed: physically recalibrate and update manual timings");
-static_assert(forward10Ms >= MOTION_MIN_MS && forward10Ms <= MOTION_MAX_MS &&
-              forward15Ms >= MOTION_MIN_MS && forward15Ms <= MOTION_MAX_MS &&
-              turnLeft90Ms >= MOTION_MIN_MS && turnLeft90Ms <= MOTION_MAX_MS &&
-              turnRight90Ms >= MOTION_MIN_MS && turnRight90Ms <= MOTION_MAX_MS,
-              "Manual movement timing is outside safety limits");
+static_assert(DEFAULT_FORWARD10_MS >= MOTION_MIN_MS && DEFAULT_FORWARD10_MS <= MOTION_MAX_MS &&
+              DEFAULT_FORWARD15_MS >= MOTION_MIN_MS && DEFAULT_FORWARD15_MS <= MOTION_MAX_MS &&
+              DEFAULT_LEFT90_MS >= MOTION_MIN_MS && DEFAULT_LEFT90_MS <= MOTION_MAX_MS &&
+              DEFAULT_RIGHT90_MS >= MOTION_MIN_MS && DEFAULT_RIGHT90_MS <= MOTION_MAX_MS,
+              "Default movement timing is outside safety limits");
 
-// These are trusted source-configured timings, not NVS verification flags.
-// A failed C1/C2/CQ/CE check disables that movement for the current session.
+// Defaults retain their existing trusted status at boot. A calibration test
+// invalidates its movement until a completed test passes tolerance.
 bool calibrated10 = true;
 bool calibrated15 = true;
 bool calibratedLeft = true;
@@ -267,7 +272,7 @@ void setup() {
   pinMode(senseFront_PIN_ECHO, INPUT);
 
   
-  Serial.println("CAL MODE: manual source timings; no NVS storage");
+  Serial.println("CAL MODE: RAM-only timings; reboot restores defaults; no NVS storage");
 
   Serial.println("LOGISTICS BOT - COMMISSIONING MODE");
 
@@ -801,6 +806,11 @@ void advanceMotion() {
 }
 
 void recordMeasurement(const char* input) {
+  if (!waitingForMeasurement || motionPurpose != CALIBRATE ||
+      !enforceMotorInterlock()) {
+    cancelMotion("CAL CANCELLED: not awaiting measurement or interlock active");
+    return;
+  }
   char* end = nullptr;
   const float actual = strtof(input, &end);
   if (end == input || *end != '\0' || !isfinite(actual) || actual <= 0.0f) {
@@ -814,26 +824,29 @@ void recordMeasurement(const char* input) {
                           (calibrationKind == '2') ? 1.0f : 5.0f;
   const bool verified = fabsf(target - actual) <= tolerance;
 
-  // This command measures the source-defined duration; it never edits it.
-  // Failed checks lock that movement until the sketch is corrected/retested.
+  unsigned long* timing = nullptr;
+  bool* verification = nullptr;
   switch (calibrationKind) {
-    case '1': calibrated10 = verified; break;
-    case '2': calibrated15 = verified; break;
-    case 'Q': calibratedLeft = verified; break;
-    case 'E': calibratedRight = verified; break;
+    case '1': timing = &forward10Ms; verification = &calibrated10; break;
+    case '2': timing = &forward15Ms; verification = &calibrated15; break;
+    case 'Q': timing = &turnLeft90Ms; verification = &calibratedLeft; break;
+    case 'E': timing = &turnRight90Ms; verification = &calibratedRight; break;
+    default: cancelMotion("CAL CANCELLED: invalid calibration kind"); return;
   }
+  *verification = verified;
 
   if (verified) {
-    Serial.printf("CAL CHECK PASS: measured %.1f, target %.1f, timing %lu ms (source unchanged)\n",
-                  actual, target, calibrationTestMs);
+    Serial.printf("CAL CHECK PASS: measured %.1f, target %.1f, timing %lu ms VERIFIED (RAM)\n",
+                  actual, target, *timing);
   } else {
     const double proposed = (double)calibrationTestMs * target / actual;
-    if (proposed >= MOTION_MIN_MS && proposed <= MOTION_MAX_MS) {
-      Serial.printf("CAL CHECK FAIL: measured %.1f, target %.1f; suggested %lu ms. "
-                    "Edit source timing, upload, and physically retest.\n",
-                    actual, target, (unsigned long)(proposed + 0.5));
+    if (isfinite(proposed) && proposed >= MOTION_MIN_MS && proposed <= MOTION_MAX_MS) {
+      *timing = (unsigned long)(proposed + 0.5);
+      Serial.printf("CAL CHECK FAIL: measured %.1f, target %.1f; RAM timing %lu ms. "
+                    "UNVERIFIED: repeat C%c in a cleared test area.\n",
+                    actual, target, *timing, calibrationKind);
     } else {
-      Serial.println("CAL CHECK FAIL: suggested timing out of bounds; inspect hardware");
+      Serial.println("CAL CHECK FAIL: proposed timing out of bounds; timing unchanged; inspect hardware");
     }
   }
 
@@ -1103,18 +1116,26 @@ void processCommand(const char* command) {
       command[2] == '\0' &&
       (command[1] == '1' || command[1] == '2' ||
        command[1] == 'Q' || command[1] == 'E')) {
+    if (continuousAutoEnabled || motionPurpose != NONE) {
+      Serial.println("CAL BLOCKED: enter MM before calibrating");
+      return;
+    }
     calibrationKind = command[1];
     stepCount = 0;
     if (calibrationKind == '1') {
+      calibrated10 = false;
       calibrationTestMs = forward10Ms;
       addStep(DRIVE, 1, 1, calibrationTestMs, 10.0f);
     } else if (calibrationKind == '2') {
+      calibrated15 = false;
       calibrationTestMs = forward15Ms;
       addStep(DRIVE, 1, 1, calibrationTestMs, 15.0f);
     } else if (calibrationKind == 'Q') {
+      calibratedLeft = false;
       calibrationTestMs = turnLeft90Ms;
       addStep(TURN_LEFT, -1, 1, calibrationTestMs);
     } else {
+      calibratedRight = false;
       calibrationTestMs = turnRight90Ms;
       addStep(TURN_RIGHT, 1, -1, calibrationTestMs);
     }
@@ -1168,6 +1189,7 @@ void processCommand(const char* command) {
     Serial.printf("CAL: 10=%lu(%d) 15=%lu(%d) LEFT90=%lu(%d) RIGHT90=%lu(%d) ms\n",
                   forward10Ms, calibrated10, forward15Ms, calibrated15,
                   turnLeft90Ms, calibratedLeft, turnRight90Ms, calibratedRight);
+    Serial.println("CAL RAM: 1=verified, 0=unverified; reboot restores defaults");
     Serial.printf("AUTO: %s | actions=%u/%u\n",
                   continuousAutoEnabled ? "ON" : "OFF",
                   (unsigned)autoActionsCompleted, (unsigned)AUTO_ACTION_LIMIT);
