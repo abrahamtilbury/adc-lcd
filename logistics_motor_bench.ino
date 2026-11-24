@@ -243,9 +243,21 @@ void reportCalNvsError(const char* operation, const char* key, esp_err_t err) {
                 operation, key, esp_err_to_name(err), (unsigned)err);
 }
 
-// Open a fresh handle, commit the value, close it, then verify through
-// a separate read-only handle. Report native NVS errors rather than defaults.
-bool writeCalibrationValue(const char* key, uint32_t value) {
+// Each calibration is stored as ONE NVS record: the verified timing and
+// the motor profile must be restored together or not at all. Existing
+// legacy c1/c1sig keys are deliberately left untouched and not trusted.
+constexpr uint32_t CAL_RECORD_MAGIC = 0x43414C32UL;
+struct CalibrationRecord {
+  uint32_t magic;
+  uint32_t profile;
+  uint32_t durationMs;
+};
+static_assert(sizeof(CalibrationRecord) == 12, "Unexpected calibration record size");
+
+bool saveCalibrationRecord(const char* key, uint32_t durationMs) {
+  const CalibrationRecord record = {
+    CAL_RECORD_MAGIC, calibrationProfile(), durationMs
+  };
   nvs_handle_t handle;
   esp_err_t err = nvs_open(CAL_NAMESPACE, NVS_READWRITE, &handle);
   if (err != ESP_OK) {
@@ -253,9 +265,9 @@ bool writeCalibrationValue(const char* key, uint32_t value) {
     return false;
   }
 
-  err = nvs_set_u32(handle, key, value);
+  err = nvs_set_blob(handle, key, &record, sizeof(record));
   if (err != ESP_OK) {
-    reportCalNvsError("set", key, err);
+    reportCalNvsError("set record", key, err);
     nvs_close(handle);
     return false;
   }
@@ -263,7 +275,7 @@ bool writeCalibrationValue(const char* key, uint32_t value) {
   err = nvs_commit(handle);
   nvs_close(handle);
   if (err != ESP_OK) {
-    reportCalNvsError("commit", key, err);
+    reportCalNvsError("commit record", key, err);
     return false;
   }
 
@@ -273,48 +285,99 @@ bool writeCalibrationValue(const char* key, uint32_t value) {
     return false;
   }
 
-  uint32_t readback = 0;
-  err = nvs_get_u32(handle, key, &readback);
+  CalibrationRecord check = {};
+  size_t checkSize = sizeof(check);
+  err = nvs_get_blob(handle, key, &check, &checkSize);
   nvs_close(handle);
   if (err != ESP_OK) {
-    reportCalNvsError("read after reopen", key, err);
+    reportCalNvsError("read record after reopen", key, err);
     return false;
   }
 
-  Serial.printf("CAL NVS %s: committed; reopened read=%lu expected=%lu | %s\n",
-                key, (unsigned long)readback, (unsigned long)value,
-                readback == value ? "OK" : "FAIL");
-  return readback == value;
+  const bool matches = checkSize == sizeof(record) &&
+                       check.magic == record.magic &&
+                       check.profile == record.profile &&
+                       check.durationMs == record.durationMs;
+  Serial.printf("CAL NVS record [%s]: readback %s | duration=%lu profile=0x%08lx\n",
+                key, matches ? "MATCH" : "MISMATCH",
+                (unsigned long)check.durationMs, (unsigned long)check.profile);
+  return matches;
 }
 
-// Retain existing keys and legacy profile compatibility, but only fall
-// back to the shared profile when the individual key is genuinely absent.
+// Invalidate a failed physical calibration; do not erase the namespace.
+bool invalidateCalibrationRecord(const char* key) {
+  nvs_handle_t handle;
+  esp_err_t err = nvs_open(CAL_NAMESPACE, NVS_READWRITE, &handle);
+  if (err != ESP_OK) {
+    reportCalNvsError("invalidate open", key, err);
+    return false;
+  }
+  err = nvs_erase_key(handle, key);
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    nvs_close(handle);
+    return true;  // There was no saved proof to invalidate.
+  }
+  if (err != ESP_OK) {
+    reportCalNvsError("invalidate erase", key, err);
+    nvs_close(handle);
+    return false;
+  }
+  err = nvs_commit(handle);
+  nvs_close(handle);
+  if (err != ESP_OK) {
+    reportCalNvsError("invalidate commit", key, err);
+    return false;
+  }
+
+  err = nvs_open(CAL_NAMESPACE, NVS_READONLY, &handle);
+  if (err == ESP_ERR_NVS_NOT_FOUND) return true;
+  if (err != ESP_OK) {
+    reportCalNvsError("invalidate reopen", key, err);
+    return false;
+  }
+  CalibrationRecord oldRecord = {};
+  size_t length = sizeof(oldRecord);
+  err = nvs_get_blob(handle, key, &oldRecord, &length);
+  nvs_close(handle);
+  if (err == ESP_ERR_NVS_NOT_FOUND) return true;
+  if (err == ESP_OK) {
+    Serial.printf("CAL NVS invalidate FAILED [%s]: record remains\n", key);
+  } else {
+    reportCalNvsError("invalidate verify", key, err);
+  }
+  return false;
+}
+
 void restoreCalibration(nvs_handle_t handle, const char* key,
-                        const char* profileKey,
                         unsigned long& duration, bool& verified) {
   verified = false;
-  uint32_t saved = 0;
-  uint32_t savedProfile = 0;
-  esp_err_t err = nvs_get_u32(handle, key, &saved);
-  if (err != ESP_OK) {
-    reportCalNvsError("restore timing", key, err);
-    return;
-  }
-
-  err = nvs_get_u32(handle, profileKey, &savedProfile);
+  CalibrationRecord record = {};
+  size_t length = sizeof(record);
+  const esp_err_t err = nvs_get_blob(handle, key, &record, &length);
   if (err == ESP_ERR_NVS_NOT_FOUND) {
-    err = nvs_get_u32(handle, "profile", &savedProfile);
-  }
-  if (err != ESP_OK) {
-    reportCalNvsError("restore profile", profileKey, err);
+    Serial.printf("CAL NVS record [%s]: not saved yet\n", key);
     return;
   }
-
-  if (savedProfile == calibrationProfile() &&
-      saved >= MOTION_MIN_MS && saved <= MOTION_MAX_MS) {
-    duration = saved;
-    verified = true;
+  if (err != ESP_OK) {
+    reportCalNvsError("restore record", key, err);
+    return;
   }
+  if (length != sizeof(record) || record.magic != CAL_RECORD_MAGIC) {
+    Serial.printf("CAL NVS record [%s]: invalid format; unverified\n", key);
+    return;
+  }
+  if (record.profile != calibrationProfile()) {
+    Serial.printf("CAL NVS record [%s]: profile mismatch saved=0x%08lx current=0x%08lx\n",
+                  key, (unsigned long)record.profile,
+                  (unsigned long)calibrationProfile());
+    return;
+  }
+  if (record.durationMs < MOTION_MIN_MS || record.durationMs > MOTION_MAX_MS) {
+    Serial.printf("CAL NVS record [%s]: out-of-range timing; unverified\n", key);
+    return;
+  }
+  duration = record.durationMs;
+  verified = true;
 }
 
 void loadSavedCalibrations() {
@@ -326,10 +389,10 @@ void loadSavedCalibrations() {
     return;
   }
 
-  restoreCalibration(handle, "c1", "c1sig", forward10Ms, calibrated10);
-  restoreCalibration(handle, "c2", "c2sig", forward15Ms, calibrated15);
-  restoreCalibration(handle, "cq", "cqsig", turnLeft90Ms, calibratedLeft);
-  restoreCalibration(handle, "ce", "cesig", turnRight90Ms, calibratedRight);
+  restoreCalibration(handle, "c1rec", forward10Ms, calibrated10);
+  restoreCalibration(handle, "c2rec", forward15Ms, calibrated15);
+  restoreCalibration(handle, "cqrec", turnLeft90Ms, calibratedLeft);
+  restoreCalibration(handle, "cerec", turnRight90Ms, calibratedRight);
   nvs_close(handle);
 
   Serial.printf(
@@ -339,6 +402,63 @@ void loadSavedCalibrations() {
     calibratedLeft ? "RESTORED" : "UNVERIFIED",
     calibratedRight ? "RESTORED" : "UNVERIFIED"
   );
+}
+
+// H runs a motor-free NVS health test. A second H after EN must report
+// a retained previous marker if flash persistence is working.
+void testNvsPersistence() {
+  constexpr char testNamespace[] = "logbot_diag";
+  constexpr char testKey[] = "marker";
+  constexpr uint32_t testValue = 123456UL;
+  nvs_handle_t handle;
+  esp_err_t err = nvs_open(testNamespace, NVS_READWRITE, &handle);
+  if (err != ESP_OK) {
+    reportCalNvsError("TEST open RW", testKey, err);
+    return;
+  }
+
+  uint32_t previous = 0;
+  err = nvs_get_u32(handle, testKey, &previous);
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    Serial.println("NVS TEST: previous marker NOT FOUND (expected on first run)");
+  } else if (err == ESP_OK) {
+    Serial.printf("NVS TEST: previous marker=%lu | %s\n",
+                  (unsigned long)previous,
+                  previous == testValue ? "RETAINED" : "UNEXPECTED");
+  } else {
+    reportCalNvsError("TEST previous read", testKey, err);
+    nvs_close(handle);
+    return;
+  }
+
+  err = nvs_set_u32(handle, testKey, testValue);
+  if (err != ESP_OK) {
+    reportCalNvsError("TEST set", testKey, err);
+    nvs_close(handle);
+    return;
+  }
+  err = nvs_commit(handle);
+  nvs_close(handle);
+  if (err != ESP_OK) {
+    reportCalNvsError("TEST commit", testKey, err);
+    return;
+  }
+
+  err = nvs_open(testNamespace, NVS_READONLY, &handle);
+  if (err != ESP_OK) {
+    reportCalNvsError("TEST reopen RO", testKey, err);
+    return;
+  }
+  uint32_t readback = 0;
+  err = nvs_get_u32(handle, testKey, &readback);
+  nvs_close(handle);
+  if (err != ESP_OK) {
+    reportCalNvsError("TEST read after reopen", testKey, err);
+    return;
+  }
+  Serial.printf("NVS TEST: immediate readback=%lu | %s\n",
+                (unsigned long)readback,
+                readback == testValue ? "PASS" : "FAIL");
 }
 
 /* ============================================================
@@ -932,46 +1052,41 @@ void recordMeasurement(const char* input) {
   // A timing is verified only if that exact timing was physically tested.
   const unsigned long nextMs = verified ? calibrationTestMs : corrected;
   switch (calibrationKind) {
-    case '1': forward10Ms = nextMs; calibrated10 = verified; break;
-    case '2': forward15Ms = nextMs; calibrated15 = verified; break;
-    case 'Q': turnLeft90Ms = nextMs; calibratedLeft = verified; break;
-    case 'E': turnRight90Ms = nextMs; calibratedRight = verified; break;
+    case '1': forward10Ms = nextMs; break;
+    case '2': forward15Ms = nextMs; break;
+    case 'Q': turnLeft90Ms = nextMs; break;
+    case 'E': turnRight90Ms = nextMs; break;
   }
   
-  // Use separate flash keys for the verified timing and its motor profile.
-  const char* calKey =
-      calibrationKind == '1' ? "c1" :
-      calibrationKind == '2' ? "c2" :
-      calibrationKind == 'Q' ? "cq" :
-      calibrationKind == 'E' ? "ce" : nullptr;
-  const char* profileKey =
-      calibrationKind == '1' ? "c1sig" :
-      calibrationKind == '2' ? "c2sig" :
-      calibrationKind == 'Q' ? "cqsig" :
-      calibrationKind == 'E' ? "cesig" : nullptr;
+  // One flash record per calibration binds its duration to the motor profile.
+  const char* recordKey =
+      calibrationKind == '1' ? "c1rec" :
+      calibrationKind == '2' ? "c2rec" :
+      calibrationKind == 'Q' ? "cqrec" :
+      calibrationKind == 'E' ? "cerec" : nullptr;
 
-  if (calKey != nullptr && profileKey != nullptr) {
-    // Invalidate the old proof BEFORE changing the stored timing.
-    // If this fails, do not overwrite the timing or certify a new profile.
-    const bool invalidated = writeCalibrationValue(profileKey, 0);
-    if (!invalidated) {
-      Serial.println("CAL FLASH WARNING: old proof invalidation not confirmed");
-    }
-
+  bool saved = false;
+  if (recordKey != nullptr) {
     if (verified) {
-      const bool timingOK = invalidated &&
-          writeCalibrationValue(calKey, (uint32_t)nextMs);
-      const bool saved = timingOK &&
-          writeCalibrationValue(profileKey, calibrationProfile());
-
+      saved = saveCalibrationRecord(recordKey, (uint32_t)nextMs);
       if (saved) {
         Serial.printf("CAL FLASH SAVED + CHECKED: %s = %lu ms\n",
-                      calKey, nextMs);
+                      recordKey, nextMs);
       } else {
-        Serial.printf("CAL FLASH SAVE FAILED: %s not confirmed in NVS; RAM only\n",
-                      calKey);
+        Serial.printf("CAL FLASH SAVE FAILED: %s; physical pass only, not persisted\n",
+                      recordKey);
       }
+    } else if (!invalidateCalibrationRecord(recordKey)) {
+      Serial.printf("CAL FLASH WARNING: failed retest proof not erased [%s]\n",
+                    recordKey);
     }
+  }
+  // Fail closed: a successful physical test alone is not a confirmed NVS save.
+  switch (calibrationKind) {
+    case '1': calibrated10 = verified && saved; break;
+    case '2': calibrated15 = verified && saved; break;
+    case 'Q': calibratedLeft = verified && saved; break;
+    case 'E': calibratedRight = verified && saved; break;
   }
 
   Serial.printf("MEASURED %.1f, TARGET %.1f => NEXT TEST %lu ms; %s\n",
@@ -1260,6 +1375,7 @@ void processCommand(const char* command) {
     Serial.println("COMMANDS: ? status, N one action, Z auto ON/OFF, G probe arm, X stop");
     Serial.println("MOVE: 1/2, Q/E | CAL: C1/C2/CQ/CE");
     Serial.println("BENCH: A/l left, S/r right, F/B both, +/- duration");
+    Serial.println("NVS: H tests flash persistence without motor movement");
 
     return;
   }
@@ -1309,6 +1425,10 @@ void processCommand(const char* command) {
 
     return;
 
+  }
+  if (c == 'H') {
+    testNvsPersistence();
+    return;
   }
   if (c == '+' || c == '-') {
     if (c == '+') motorTestMs = min(motorTestMs + MOTOR_TEST_STEP_MS,
