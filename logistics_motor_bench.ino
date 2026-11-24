@@ -208,10 +208,12 @@ void setRightMotor(int direction, uint8_t requestedDuty) {
 constexpr unsigned long MOTION_MIN_MS = 50UL;
 constexpr unsigned long MOTION_MAX_MS = 4000UL;
 
-unsigned long forward10Ms = 455UL;
-unsigned long forward15Ms = 666UL;
-unsigned long turnLeft90Ms = 1159UL;
-unsigned long turnRight90Ms = 728UL;
+// Last physically verified timings for this motor and PWM configuration.
+// These are fallbacks, not proof of calibration after a reset.
+unsigned long forward10Ms = 506UL;
+unsigned long forward15Ms = 768UL;
+unsigned long turnLeft90Ms = 770UL;
+unsigned long turnRight90Ms = 588UL;
 
 bool calibrated10 = false;
 bool calibrated15 = false;
@@ -236,12 +238,20 @@ uint32_t calibrationProfile() {
          (uint32_t)rightDriveDuty();
 }
 
-void restoreCalibration(const char* key,
-                        unsigned long& duration,
-                        bool& verified) {
+// Each timing has its own motor profile marker. This prevents a profile
+// change from re-verifying other timings merely because one was recalibrated.
+// Older sketches used the shared "profile" key; read that only for legacy
+// timings that do not have a per-calibration marker.
+void restoreCalibration(const char* key, const char* profileKey,
+                        unsigned long& duration, bool& verified) {
   const unsigned long saved = calibrationStore.getULong(key, 0);
+  const uint32_t currentProfile = calibrationProfile();
+  const uint32_t savedProfile = calibrationStore.isKey(profileKey)
+      ? calibrationStore.getULong(profileKey, 0)
+      : calibrationStore.getULong("profile", 0);
 
-  if (saved >= MOTION_MIN_MS && saved <= MOTION_MAX_MS) {
+  if (savedProfile == currentProfile &&
+      saved >= MOTION_MIN_MS && saved <= MOTION_MAX_MS) {
     duration = saved;
     verified = true;
   }
@@ -255,25 +265,19 @@ void loadSavedCalibrations() {
     return;
   }
 
-  const uint32_t profile = calibrationProfile();
-
-  if (calibrationStore.getULong("profile", 0) != profile) {
-    // Clear only this project's calibration namespace.
-    if (!calibrationStore.clear() ||
-        calibrationStore.putULong("profile", profile) != 4) {
-      Serial.println("CAL FLASH ERROR: cannot initialise storage");
-      calibrationStore.end();
-      calibrationStorageReady = false;
-      return;
-    }
-
-    Serial.println("CAL FLASH: new motor profile; old timings cleared");
+  const uint32_t currentProfile = calibrationProfile();
+  const uint32_t legacyProfile = calibrationStore.getULong("profile", 0);
+  Serial.printf("CAL FLASH PROFILE: legacy=%lu current=%lu (no erase)\n",
+                (unsigned long)legacyProfile,
+                (unsigned long)currentProfile);
+  if (legacyProfile != currentProfile) {
+    Serial.println("CAL FLASH: old profile differs; only matching per-calibration records restore");
   }
 
-  restoreCalibration("c1", forward10Ms, calibrated10);
-  restoreCalibration("c2", forward15Ms, calibrated15);
-  restoreCalibration("cq", turnLeft90Ms, calibratedLeft);
-  restoreCalibration("ce", turnRight90Ms, calibratedRight);
+  restoreCalibration("c1", "c1sig", forward10Ms, calibrated10);
+  restoreCalibration("c2", "c2sig", forward15Ms, calibrated15);
+  restoreCalibration("cq", "cqsig", turnLeft90Ms, calibratedLeft);
+  restoreCalibration("ce", "cesig", turnRight90Ms, calibratedRight);
 
   Serial.printf(
     "CAL FLASH: C1=%s C2=%s CQ=%s CE=%s\n",
@@ -882,29 +886,45 @@ void recordMeasurement(const char* input) {
     case 'E': turnRight90Ms = nextMs; calibratedRight = verified; break;
   }
   
-  // Identify the flash key for this calibration.
+  // Use separate flash keys for the verified timing and its motor profile.
   const char* calKey =
       calibrationKind == '1' ? "c1" :
       calibrationKind == '2' ? "c2" :
       calibrationKind == 'Q' ? "cq" :
       calibrationKind == 'E' ? "ce" : nullptr;
+  const char* profileKey =
+      calibrationKind == '1' ? "c1sig" :
+      calibrationKind == '2' ? "c2sig" :
+      calibrationKind == 'Q' ? "cqsig" :
+      calibrationKind == 'E' ? "cesig" : nullptr;
 
-  if (calibrationStorageReady && calKey != nullptr) {
+  if (calibrationStorageReady && calKey != nullptr && profileKey != nullptr) {
     if (verified) {
-      // Save only the duration that was physically verified.
-      if (calibrationStore.putULong(calKey, nextMs) == 4) {
-        Serial.printf("CAL FLASH SAVED: %s = %lu ms\n",
+      const uint32_t profile = calibrationProfile();
+      // A readback is required: a RAM-only (1) is not proof of flash storage.
+      const bool saved =
+          calibrationStore.putULong(calKey, nextMs) == 4 &&
+          calibrationStore.putULong(profileKey, profile) == 4 &&
+          calibrationStore.getULong(calKey, 0) == nextMs &&
+          calibrationStore.getULong(profileKey, 0) == profile;
+      if (saved) {
+        Serial.printf("CAL FLASH SAVED + CHECKED: %s = %lu ms\n",
                       calKey, nextMs);
       } else {
-        Serial.println("CAL FLASH SAVE FAILED: RAM only");
+        Serial.printf("CAL FLASH SAVE FAILED: %s not confirmed in NVS\n", calKey);
       }
     } else {
-      // A failed retest invalidates any previously saved calibration.
-      if (calibrationStore.isKey(calKey) &&
-          !calibrationStore.remove(calKey)) {
-        Serial.println("CAL FLASH WARNING: old value not erased");
+      // Retain the old measurement for diagnosis, but invalidate its proof.
+      // Writing zero also overrides the legacy shared-profile fallback.
+      const bool invalidated =
+          calibrationStore.putULong(profileKey, 0UL) == 4 &&
+          calibrationStore.getULong(profileKey, 0xFFFFFFFFUL) == 0;
+      if (!invalidated) {
+        Serial.printf("CAL FLASH WARNING: %s invalidation not confirmed\n", calKey);
       }
     }
+  } else if (verified) {
+    Serial.println("CAL FLASH SAVE FAILED: storage unavailable, RAM only");
   }
 
   Serial.printf("MEASURED %.1f, TARGET %.1f => NEXT TEST %lu ms; %s\n",
