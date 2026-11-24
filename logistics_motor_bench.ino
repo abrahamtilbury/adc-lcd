@@ -902,11 +902,27 @@ void recordMeasurement(const char* input) {
     if (verified) {
       const uint32_t profile = calibrationProfile();
       // A readback is required: a RAM-only (1) is not proof of flash storage.
-      const bool saved =
-          calibrationStore.putULong(calKey, nextMs) == 4 &&
-          calibrationStore.putULong(profileKey, profile) == 4 &&
-          calibrationStore.getULong(calKey, 0) == nextMs &&
-          calibrationStore.getULong(profileKey, 0) == profile;
+      const size_t timingBytes = calibrationStore.putULong(calKey, nextMs);
+      const unsigned long timingReadback = calibrationStore.getULong(calKey, 0);
+      const bool timingOK = timingBytes == 4 && timingReadback == nextMs;
+
+      // Do not certify a profile if its timing could not be stored correctly.
+      size_t profileBytes = 0;
+      if (timingOK) {
+        profileBytes = calibrationStore.putULong(profileKey, profile);
+      }
+      const unsigned long profileReadback = calibrationStore.getULong(profileKey, 0);
+
+      Serial.printf("CAL NVS %s: timing write=%u/4 bytes | read=%lu expected=%lu | %s\n",
+                    calKey, (unsigned)timingBytes, timingReadback, nextMs,
+                    timingOK ? "OK" : "FAIL");
+      Serial.printf("CAL NVS %s: profile write=%u/4 bytes | read=%lu expected=%lu | %s\n",
+                    profileKey, (unsigned)profileBytes, profileReadback,
+                    (unsigned long)profile,
+                    !timingOK ? "SKIPPED (timing failed)" :
+                    (profileBytes == 4 && profileReadback == profile) ? "OK" : "FAIL");
+
+      const bool saved = timingOK && profileBytes == 4 && profileReadback == profile;
       if (saved) {
         Serial.printf("CAL FLASH SAVED + CHECKED: %s = %lu ms\n",
                       calKey, nextMs);
@@ -916,9 +932,13 @@ void recordMeasurement(const char* input) {
     } else {
       // Retain the old measurement for diagnosis, but invalidate its proof.
       // Writing zero also overrides the legacy shared-profile fallback.
-      const bool invalidated =
-          calibrationStore.putULong(profileKey, 0UL) == 4 &&
-          calibrationStore.getULong(profileKey, 0xFFFFFFFFUL) == 0;
+      const size_t invalidationBytes = calibrationStore.putULong(profileKey, 0UL);
+      const unsigned long invalidationReadback =
+          calibrationStore.getULong(profileKey, 0xFFFFFFFFUL);
+      const bool invalidated = invalidationBytes == 4 && invalidationReadback == 0;
+      Serial.printf("CAL NVS %s: invalidate write=%u/4 bytes | read=%lu expected=0 | %s\n",
+                    profileKey, (unsigned)invalidationBytes, invalidationReadback,
+                    invalidated ? "OK" : "FAIL");
       if (!invalidated) {
         Serial.printf("CAL FLASH WARNING: %s invalidation not confirmed\n", calKey);
       }
