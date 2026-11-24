@@ -1175,7 +1175,6 @@ void processCommand(const char* command) {
     Serial.printf("CAL: 10=%lu(%d) 15=%lu(%d) LEFT90=%lu(%d) RIGHT90=%lu(%d) ms\n",
                   forward10Ms, calibrated10, forward15Ms, calibrated15,
                   turnLeft90Ms, calibratedLeft, turnRight90Ms, calibratedRight);
-    Serial.println("CAL: (1)=source-configured / passed this session; NOT flash proof");
     Serial.printf("NAV: reactive, no map | continuous=%s | actions=%u/%u\n",
                   continuousAutoEnabled ? "ON" : "OFF",
                   (unsigned)autoActionsCompleted, (unsigned)AUTO_ACTION_LIMIT);
