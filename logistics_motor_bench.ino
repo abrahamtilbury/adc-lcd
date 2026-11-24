@@ -443,12 +443,18 @@ float readFilteredDistanceCm(int trigPin, int echoPin,
 // True only if all 15 raw ECHO attempts timed out (not merely an invalid median).
 bool lastFullScanAllTimeouts = false;
 
+// Most recent filtered three-sensor scan, reused for Blynk during autonomy.
+float lastScanFrontCm = -1.0f;
+float lastScanLeftCm = -1.0f;
+float lastScanRightCm = -1.0f;
+
 // Read and classify front, left and right sensor scans.
 void readAllDistances(float* front, float* left, float* right,
                       bool* frontClose, bool* leftClose, bool* rightClose) {
   *front = *left = *right = -1.0f;
   *frontClose = *leftClose = *rightClose = false;
   lastFullScanAllTimeouts = false;
+  lastScanFrontCm = lastScanLeftCm = lastScanRightCm = -1.0f;
 
   uint8_t closeCount = 0;
   uint8_t frontTimeouts = 0, leftTimeouts = 0, rightTimeouts = 0;
@@ -477,6 +483,9 @@ void readAllDistances(float* front, float* left, float* right,
   *rightClose = closeCount >= CLOSE_CONFIRMATIONS;
   lastFullScanAllTimeouts = (frontTimeouts == 5 &&
                              leftTimeouts == 5 && rightTimeouts == 5);
+  lastScanFrontCm = *front;
+  lastScanLeftCm = *left;
+  lastScanRightCm = *right;
 }
 
 
@@ -1287,15 +1296,29 @@ void publishBlynkTelemetry() {
   if (!Blynk.connected()) return;
 
   float frontCm = -1.0f;
+  float leftCm = -1.0f;
+  float rightCm = -1.0f;
 
-  // Avoid an additional ultrasonic measurement during movement.
-  if (!motionRunning &&
-      !waitingForMeasurement &&
-      movementPermitted()) {
-    frontCm = readDistanceCm(
-      senseFront_PIN_TRIG,
-      senseFront_PIN_ECHO
-    );
+  // Never trigger extra ultrasonic measurements while moving.
+  if (!motionRunning && !waitingForMeasurement && movementPermitted()) {
+    if (continuousAutoEnabled) {
+      // Autonomous mode already takes filtered scans of all three sensors.
+      frontCm = lastScanFrontCm;
+      leftCm = lastScanLeftCm;
+      rightCm = lastScanRightCm;
+    } else {
+      // Fresh single readings while idle; maintain spacing between sensors.
+      frontCm = readDistanceCm(senseFront_PIN_TRIG, senseFront_PIN_ECHO);
+      delay(SENSOR_GAP_MS);
+      if (movementPermitted()) {
+        leftCm = readDistanceCm(senseLeft_PIN_TRIG, senseLeft_PIN_ECHO);
+        delay(SENSOR_GAP_MS);
+      }
+      if (movementPermitted()) {
+        rightCm = readDistanceCm(senseRight_PIN_TRIG, senseRight_PIN_ECHO);
+        delay(SENSOR_GAP_MS);
+      }
+    }
   }
 
   const char* status =
@@ -1306,7 +1329,10 @@ void publishBlynkTelemetry() {
       continuousAutoEnabled ? "AUTO SCANNING" :
       "IDLE";
 
-  Blynk.virtualWrite(V0, frontCm);
+  // -1 means unknown/unavailable; never present a timeout as a distance.
+  Blynk.virtualWrite(V0, frontCm >= 0.0f ? frontCm : -1.0f);
+  Blynk.virtualWrite(V8, leftCm >= 0.0f ? leftCm : -1.0f);
+  Blynk.virtualWrite(V9, rightCm >= 0.0f ? rightCm : -1.0f);
   Blynk.virtualWrite(V1, status);
 }
 
