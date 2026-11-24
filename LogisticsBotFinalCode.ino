@@ -214,7 +214,6 @@ constexpr unsigned long forward15Ms = 768UL;
 constexpr unsigned long turnLeft90Ms = 770UL;
 constexpr unsigned long turnRight90Ms = 588UL;
 
-// Adjust RIGHT_DRIVE_RATIO if the unit curves to the left
 static_assert(MOTOR_TEST_DUTY == 180 && RIGHT_DRIVE_RATIO == 1.00f,
               "PWM changed: physically recalibrate and update manual timings");
 static_assert(forward10Ms >= MOTION_MIN_MS && forward10Ms <= MOTION_MAX_MS &&
@@ -1504,34 +1503,34 @@ void loop() {
   // A Blynk callback may have latched the remote stop.
   if (!enforceMotorInterlock()) return;
   while (Serial.available() > 0) {
-  const char c = (char)Serial.read();
-  if (c == 'X' || c == 'x') {
-    length = 0;
-    discardingLine = false;
-    cancelMotion("MANUAL X: BOTH MOTORS OFF; operation cancelled");
-    while (Serial.available() > 0) Serial.read();
-    return;
-  }
-
-  // Ignore the remainder of an oversized command.
-  if (discardingLine) {
-    if (c == '\r' || c == '\n') discardingLine = false;
-    continue;
-  }
-
-  if (c == '\r' || c == '\n') {
-    if (length > 0) {
-      line[length] = '\0';
-      processCommand(line);
-      length = 0;
-    }
-  } else if (length < sizeof(line) - 1) {
-    line[length++] = c;
-  } else {
-    length = 0;
-    discardingLine = true;
-    Serial.println("SERIAL INPUT TOO LONG: discarded");
-  }
+     const char c = (char)Serial.read();
+     if (c == 'X' || c == 'x') {
+       length = 0;
+       discardingLine = false;
+       cancelMotion("MANUAL X: BOTH MOTORS OFF; operation cancelled");
+       while (Serial.available() > 0) Serial.read();
+       return;
+     }
+   
+     // Ignore the remainder of an oversized command.
+     if (discardingLine) {
+       if (c == '\r' || c == '\n') discardingLine = false;
+       continue;
+     }
+   
+     if (c == '\r' || c == '\n') {
+       if (length > 0) {
+         line[length] = '\0';
+         processCommand(line);
+         length = 0;
+       }
+     } else if (length < sizeof(line) - 1) {
+       line[length++] = c;
+     } else {
+       length = 0;
+       discardingLine = true;
+       Serial.println("SERIAL INPUT TOO LONG: discarded");
+     }
 }
     advanceMotion();
     serviceContinuousAuto();
