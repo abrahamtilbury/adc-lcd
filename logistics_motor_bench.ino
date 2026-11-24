@@ -5,8 +5,7 @@
 #include <BlynkSimpleEsp32.h>
 #include <math.h>
 #include <stdlib.h>
-#include <nvs.h>
-#include <esp_err.h>
+#include <string.h>
 const char WIFI_SSID[] = "Abe's iPhone";
 const char WIFI_PASSWORD[] = "nintendo";
 
@@ -205,261 +204,33 @@ void setRightMotor(int direction, uint8_t requestedDuty) {
 /* ============================================================
    3. TIMED MOVEMENT CALIBRATION
    ============================================================ */
-// Provisional timings (calibrated through C1, C2, CQ, CE).
+// Manually recorded movement timings; no flash storage or reset recalibration.
+// Re-measure after changing motors, power, wheel load or test surface.
 constexpr unsigned long MOTION_MIN_MS = 50UL;
 constexpr unsigned long MOTION_MAX_MS = 4000UL;
 
-// Last physically verified timings for this motor and PWM configuration.
-// These are fallbacks, not proof of calibration after a reset.
-unsigned long forward10Ms = 506UL;
-unsigned long forward15Ms = 768UL;
-unsigned long turnLeft90Ms = 770UL;
-unsigned long turnRight90Ms = 588UL;
+// Most recently physically verified timings (C1=460 ms, C2/CQ/CE as recorded).
+constexpr unsigned long forward10Ms = 460UL;
+constexpr unsigned long forward15Ms = 768UL;
+constexpr unsigned long turnLeft90Ms = 770UL;
+constexpr unsigned long turnRight90Ms = 588UL;
 
-bool calibrated10 = false;
-bool calibrated15 = false;
-bool calibratedLeft = false;
-bool calibratedRight = false;
+// Do not silently trust these timings if the motor PWM configuration changes.
+static_assert(MOTOR_TEST_DUTY == 180 && RIGHT_DRIVE_RATIO == 1.00f,
+              "PWM changed: physically recalibrate and update manual timings");
+static_assert(forward10Ms >= MOTION_MIN_MS && forward10Ms <= MOTION_MAX_MS &&
+              forward15Ms >= MOTION_MIN_MS && forward15Ms <= MOTION_MAX_MS &&
+              turnLeft90Ms >= MOTION_MIN_MS && turnLeft90Ms <= MOTION_MAX_MS &&
+              turnRight90Ms >= MOTION_MIN_MS && turnRight90Ms <= MOTION_MAX_MS,
+              "Manual movement timing is outside safety limits");
 
+// These are trusted source-configured timings, not NVS verification flags.
+// A failed C1/C2/CQ/CE check disables that movement for the current session.
+bool calibrated10 = true;
+bool calibrated15 = true;
+bool calibratedLeft = true;
+bool calibratedRight = true;
 
-/* ============================================================
-   VERIFIED CALIBRATION STORAGE - ESP32 NVS FLASH
-   ============================================================ */
-
-constexpr char CAL_NAMESPACE[] = "logbotcal";
-
-// Increment this if motor hardware or timing behaviour changes.
-constexpr uint32_t CAL_PROFILE_VERSION = 1;
-
-// Changing the base PWM or right-wheel trim invalidates old timings.
-uint32_t calibrationProfile() {
-  return (CAL_PROFILE_VERSION << 16) |
-         ((uint32_t)MOTOR_TEST_DUTY << 8) |
-         (uint32_t)rightDriveDuty();
-}
-
-void reportCalNvsError(const char* operation, const char* key, esp_err_t err) {
-  Serial.printf("CAL NVS %s [%s]: %s (0x%x)\n",
-                operation, key, esp_err_to_name(err), (unsigned)err);
-}
-
-// Each calibration is stored as ONE NVS record: the verified timing and
-// the motor profile must be restored together or not at all. Existing
-// legacy c1/c1sig keys are deliberately left untouched and not trusted.
-constexpr uint32_t CAL_RECORD_MAGIC = 0x43414C32UL;
-struct CalibrationRecord {
-  uint32_t magic;
-  uint32_t profile;
-  uint32_t durationMs;
-};
-static_assert(sizeof(CalibrationRecord) == 12, "Unexpected calibration record size");
-
-bool saveCalibrationRecord(const char* key, uint32_t durationMs) {
-  const CalibrationRecord record = {
-    CAL_RECORD_MAGIC, calibrationProfile(), durationMs
-  };
-  nvs_handle_t handle;
-  esp_err_t err = nvs_open(CAL_NAMESPACE, NVS_READWRITE, &handle);
-  if (err != ESP_OK) {
-    reportCalNvsError("open RW", key, err);
-    return false;
-  }
-
-  err = nvs_set_blob(handle, key, &record, sizeof(record));
-  if (err != ESP_OK) {
-    reportCalNvsError("set record", key, err);
-    nvs_close(handle);
-    return false;
-  }
-
-  err = nvs_commit(handle);
-  nvs_close(handle);
-  if (err != ESP_OK) {
-    reportCalNvsError("commit record", key, err);
-    return false;
-  }
-
-  err = nvs_open(CAL_NAMESPACE, NVS_READONLY, &handle);
-  if (err != ESP_OK) {
-    reportCalNvsError("reopen RO", key, err);
-    return false;
-  }
-
-  CalibrationRecord check = {};
-  size_t checkSize = sizeof(check);
-  err = nvs_get_blob(handle, key, &check, &checkSize);
-  nvs_close(handle);
-  if (err != ESP_OK) {
-    reportCalNvsError("read record after reopen", key, err);
-    return false;
-  }
-
-  const bool matches = checkSize == sizeof(record) &&
-                       check.magic == record.magic &&
-                       check.profile == record.profile &&
-                       check.durationMs == record.durationMs;
-  Serial.printf("CAL NVS record [%s]: readback %s | duration=%lu profile=0x%08lx\n",
-                key, matches ? "MATCH" : "MISMATCH",
-                (unsigned long)check.durationMs, (unsigned long)check.profile);
-  return matches;
-}
-
-// Invalidate a failed physical calibration; do not erase the namespace.
-bool invalidateCalibrationRecord(const char* key) {
-  nvs_handle_t handle;
-  esp_err_t err = nvs_open(CAL_NAMESPACE, NVS_READWRITE, &handle);
-  if (err != ESP_OK) {
-    reportCalNvsError("invalidate open", key, err);
-    return false;
-  }
-  err = nvs_erase_key(handle, key);
-  if (err == ESP_ERR_NVS_NOT_FOUND) {
-    nvs_close(handle);
-    return true;  // There was no saved proof to invalidate.
-  }
-  if (err != ESP_OK) {
-    reportCalNvsError("invalidate erase", key, err);
-    nvs_close(handle);
-    return false;
-  }
-  err = nvs_commit(handle);
-  nvs_close(handle);
-  if (err != ESP_OK) {
-    reportCalNvsError("invalidate commit", key, err);
-    return false;
-  }
-
-  err = nvs_open(CAL_NAMESPACE, NVS_READONLY, &handle);
-  if (err == ESP_ERR_NVS_NOT_FOUND) return true;
-  if (err != ESP_OK) {
-    reportCalNvsError("invalidate reopen", key, err);
-    return false;
-  }
-  CalibrationRecord oldRecord = {};
-  size_t length = sizeof(oldRecord);
-  err = nvs_get_blob(handle, key, &oldRecord, &length);
-  nvs_close(handle);
-  if (err == ESP_ERR_NVS_NOT_FOUND) return true;
-  if (err == ESP_OK) {
-    Serial.printf("CAL NVS invalidate FAILED [%s]: record remains\n", key);
-  } else {
-    reportCalNvsError("invalidate verify", key, err);
-  }
-  return false;
-}
-
-void restoreCalibration(nvs_handle_t handle, const char* key,
-                        unsigned long& duration, bool& verified) {
-  verified = false;
-  CalibrationRecord record = {};
-  size_t length = sizeof(record);
-  const esp_err_t err = nvs_get_blob(handle, key, &record, &length);
-  if (err == ESP_ERR_NVS_NOT_FOUND) {
-    Serial.printf("CAL NVS record [%s]: not saved yet\n", key);
-    return;
-  }
-  if (err != ESP_OK) {
-    reportCalNvsError("restore record", key, err);
-    return;
-  }
-  if (length != sizeof(record) || record.magic != CAL_RECORD_MAGIC) {
-    Serial.printf("CAL NVS record [%s]: invalid format; unverified\n", key);
-    return;
-  }
-  if (record.profile != calibrationProfile()) {
-    Serial.printf("CAL NVS record [%s]: profile mismatch saved=0x%08lx current=0x%08lx\n",
-                  key, (unsigned long)record.profile,
-                  (unsigned long)calibrationProfile());
-    return;
-  }
-  if (record.durationMs < MOTION_MIN_MS || record.durationMs > MOTION_MAX_MS) {
-    Serial.printf("CAL NVS record [%s]: out-of-range timing; unverified\n", key);
-    return;
-  }
-  duration = record.durationMs;
-  verified = true;
-}
-
-void loadSavedCalibrations() {
-  nvs_handle_t handle;
-  const esp_err_t err = nvs_open(CAL_NAMESPACE, NVS_READONLY, &handle);
-  if (err != ESP_OK) {
-    reportCalNvsError("load open RO", CAL_NAMESPACE, err);
-    Serial.println("CAL FLASH: defaults retained, unverified");
-    return;
-  }
-
-  restoreCalibration(handle, "c1rec", forward10Ms, calibrated10);
-  restoreCalibration(handle, "c2rec", forward15Ms, calibrated15);
-  restoreCalibration(handle, "cqrec", turnLeft90Ms, calibratedLeft);
-  restoreCalibration(handle, "cerec", turnRight90Ms, calibratedRight);
-  nvs_close(handle);
-
-  Serial.printf(
-    "CAL FLASH: C1=%s C2=%s CQ=%s CE=%s\n",
-    calibrated10 ? "RESTORED" : "UNVERIFIED",
-    calibrated15 ? "RESTORED" : "UNVERIFIED",
-    calibratedLeft ? "RESTORED" : "UNVERIFIED",
-    calibratedRight ? "RESTORED" : "UNVERIFIED"
-  );
-}
-
-// H runs a motor-free NVS health test. A second H after EN must report
-// a retained previous marker if flash persistence is working.
-void testNvsPersistence() {
-  constexpr char testNamespace[] = "logbot_diag";
-  constexpr char testKey[] = "marker";
-  constexpr uint32_t testValue = 123456UL;
-  nvs_handle_t handle;
-  esp_err_t err = nvs_open(testNamespace, NVS_READWRITE, &handle);
-  if (err != ESP_OK) {
-    reportCalNvsError("TEST open RW", testKey, err);
-    return;
-  }
-
-  uint32_t previous = 0;
-  err = nvs_get_u32(handle, testKey, &previous);
-  if (err == ESP_ERR_NVS_NOT_FOUND) {
-    Serial.println("NVS TEST: previous marker NOT FOUND (expected on first run)");
-  } else if (err == ESP_OK) {
-    Serial.printf("NVS TEST: previous marker=%lu | %s\n",
-                  (unsigned long)previous,
-                  previous == testValue ? "RETAINED" : "UNEXPECTED");
-  } else {
-    reportCalNvsError("TEST previous read", testKey, err);
-    nvs_close(handle);
-    return;
-  }
-
-  err = nvs_set_u32(handle, testKey, testValue);
-  if (err != ESP_OK) {
-    reportCalNvsError("TEST set", testKey, err);
-    nvs_close(handle);
-    return;
-  }
-  err = nvs_commit(handle);
-  nvs_close(handle);
-  if (err != ESP_OK) {
-    reportCalNvsError("TEST commit", testKey, err);
-    return;
-  }
-
-  err = nvs_open(testNamespace, NVS_READONLY, &handle);
-  if (err != ESP_OK) {
-    reportCalNvsError("TEST reopen RO", testKey, err);
-    return;
-  }
-  uint32_t readback = 0;
-  err = nvs_get_u32(handle, testKey, &readback);
-  nvs_close(handle);
-  if (err != ESP_OK) {
-    reportCalNvsError("TEST read after reopen", testKey, err);
-    return;
-  }
-  Serial.printf("NVS TEST: immediate readback=%lu | %s\n",
-                (unsigned long)readback,
-                readback == testValue ? "PASS" : "FAIL");
-}
 
 /* ============================================================
    4. SETUP - INITIALISE HARDWARE AND SAFETY INPUTS
@@ -498,7 +269,7 @@ void setup() {
   pinMode(senseFront_PIN_ECHO, INPUT);
 
   
-  loadSavedCalibrations();
+  Serial.println("CAL MODE: manual source timings; no NVS storage");
 
   Serial.println("LOGISTICS BOT - COMMISSIONING MODE");
 
@@ -527,14 +298,14 @@ void setup() {
     (unsigned)MOTOR_TEST_DUTY
   );
 
-  Serial.println("TURNS: Q/E = left/right 90 degrees");
-  Serial.println("DISTANCE: 1/2 = forward 10cm/15cm");
-  Serial.println("CALIBRATE: C1=10cm, C2=15cm, CQ, CE");
-  Serial.println("BENCH: A/l left, S/r right, F/B both");
-  Serial.println("CONTROL: +/- duration, X stop, ? status");
   Serial.println("SERIAL: 115200 baud, Newline ending");
-  Serial.println("AUTO: N = one action | Z = continuous ON/OFF (30s / 10 actions)");
-  Serial.println("ESCAPE: G arms one unsensed 15cm probe for the next local Z session (TEST ONLY)");
+  Serial.println("MODES: AM = autonomous ON | MM = manual mode / stop autonomy");
+  Serial.println("MOVE: CL left 90 | CR right 90 | MF forward 15cm");
+  Serial.println("MOVE: MR right 90 + recheck + forward 15cm | R reverse pulse");
+  Serial.println("SAFETY: X = immediate software stop | ? = status");
+  Serial.println("CAL: C1=10cm | C2=15cm | CQ left 90 | CE right 90");
+  Serial.println("BENCH: A/l left, S/r right, F/B both, +/- duration");
+  Serial.println("DIAGNOSTIC: N = one auto action | G = unsensed probe (TEST ONLY)");
 
   Serial.printf(
     "Bench duration: %lu ms | Limits: %lu-%lu ms\n",
@@ -714,7 +485,7 @@ void readAllDistances(float* front, float* left, float* right,
    6. SERIAL MOTION AND CALIBRATION
    ============================================================ */
 enum MotionKind : uint8_t { DRIVE, TURN_LEFT, TURN_RIGHT, BENCH };
-enum MotionPurpose : uint8_t { NONE, AUTO, MANUAL, CALIBRATE, BENCH_TEST };
+enum MotionPurpose : uint8_t { NONE, AUTO, MANUAL, MANUAL_RIGHT, CALIBRATE, BENCH_TEST };
 
 // Explicit prototype to prevent Arduino auto-declaration errors.
 void beginPlan(MotionPurpose purpose);
@@ -752,7 +523,7 @@ unsigned long nextAutoScanMs = 0;
 uint8_t autoActionsCompleted = 0;
 
 // All-timeout recovery: one in-place 90-degree turn per session, then
-// optionally one 15 cm unsensed probe, locally armed with G before Z.
+// optionally one 15 cm unsensed probe, locally armed with G before AM.
 // The probe is OFF after a reboot/session; only use it in a cleared,
 // supervised test area. It cannot guarantee collision avoidance.
 constexpr uint8_t ALL_TIMEOUT_CONFIRM_SCANS = 2;
@@ -762,7 +533,7 @@ uint8_t allTimeoutScans = 0;
 bool escapeProbeArmed = false;
 bool escapeProbeActive = false;
 
-// One automatic REVERSE pulse per local Z session after repeated front
+// One automatic REVERSE pulse per local AM session after repeated front
 // timeout failures. No rear sensor: test only in a cleared, supervised area.
 constexpr unsigned long AUTO_REVERSE_RECOVERY_MS = 500UL;
 constexpr unsigned long AUTO_REVERSE_LATEST_START_MS = 25000UL;
@@ -876,7 +647,11 @@ bool beginStep() {
       return false;
     }
 
-    if (frontCm < AUTO_CLEARANCE_CM &&
+    // MR adds a 15 cm residual margin to its 15 cm forward movement.
+    // Other modes retain their existing precheck policy.
+    const float requiredClearance = motionPurpose == MANUAL_RIGHT
+        ? s.forwardCm + FRONT_OBSTACLE_CM : AUTO_CLEARANCE_CM;
+    if (frontCm < requiredClearance &&
         !(motionPurpose == CALIBRATE && frontCm < 0.0f)) {
       if (motionPurpose == AUTO && continuousAutoEnabled && frontCm < 0.0f &&
           failedFrontRecoveryScans < 255) {
@@ -1038,65 +813,40 @@ void recordMeasurement(const char* input) {
     Serial.println("INVALID: enter a positive number (e.g., 23.5), or X");
     return;
   }
+
   const float target = (calibrationKind == '1') ? 10.0f :
                        (calibrationKind == '2') ? 15.0f : 90.0f;
   const float tolerance = (calibrationKind == '1') ? 0.5f :
                           (calibrationKind == '2') ? 1.0f : 5.0f;
-  const double proposed = (double)calibrationTestMs * target / actual;
-  if (proposed < MOTION_MIN_MS || proposed > MOTION_MAX_MS) {
-    Serial.println("CALIBRATION OUT OF BOUNDS: X, then use shorter test conditions");
-    return;
-  }
-  const unsigned long corrected = (unsigned long)(proposed + 0.5);
   const bool verified = fabsf(target - actual) <= tolerance;
-  // A timing is verified only if that exact timing was physically tested.
-  const unsigned long nextMs = verified ? calibrationTestMs : corrected;
-  switch (calibrationKind) {
-    case '1': forward10Ms = nextMs; break;
-    case '2': forward15Ms = nextMs; break;
-    case 'Q': turnLeft90Ms = nextMs; break;
-    case 'E': turnRight90Ms = nextMs; break;
-  }
-  
-  // One flash record per calibration binds its duration to the motor profile.
-  const char* recordKey =
-      calibrationKind == '1' ? "c1rec" :
-      calibrationKind == '2' ? "c2rec" :
-      calibrationKind == 'Q' ? "cqrec" :
-      calibrationKind == 'E' ? "cerec" : nullptr;
 
-  bool saved = false;
-  if (recordKey != nullptr) {
-    if (verified) {
-      saved = saveCalibrationRecord(recordKey, (uint32_t)nextMs);
-      if (saved) {
-        Serial.printf("CAL FLASH SAVED + CHECKED: %s = %lu ms\n",
-                      recordKey, nextMs);
-      } else {
-        Serial.printf("CAL FLASH SAVE FAILED: %s; physical pass only, not persisted\n",
-                      recordKey);
-      }
-    } else if (!invalidateCalibrationRecord(recordKey)) {
-      Serial.printf("CAL FLASH WARNING: failed retest proof not erased [%s]\n",
-                    recordKey);
+  // This command measures the source-defined duration; it never edits it.
+  // Failed checks lock that movement until the sketch is corrected/retested.
+  switch (calibrationKind) {
+    case '1': calibrated10 = verified; break;
+    case '2': calibrated15 = verified; break;
+    case 'Q': calibratedLeft = verified; break;
+    case 'E': calibratedRight = verified; break;
+  }
+
+  if (verified) {
+    Serial.printf("CAL CHECK PASS: measured %.1f, target %.1f, timing %lu ms (source unchanged)\n",
+                  actual, target, calibrationTestMs);
+  } else {
+    const double proposed = (double)calibrationTestMs * target / actual;
+    if (proposed >= MOTION_MIN_MS && proposed <= MOTION_MAX_MS) {
+      Serial.printf("CAL CHECK FAIL: measured %.1f, target %.1f; suggested %lu ms. "
+                    "Edit source timing, upload, and physically retest.\n",
+                    actual, target, (unsigned long)(proposed + 0.5));
+    } else {
+      Serial.println("CAL CHECK FAIL: suggested timing out of bounds; inspect hardware");
     }
   }
-  // Fail closed: a successful physical test alone is not a confirmed NVS save.
-  switch (calibrationKind) {
-    case '1': calibrated10 = verified && saved; break;
-    case '2': calibrated15 = verified && saved; break;
-    case 'Q': calibratedLeft = verified && saved; break;
-    case 'E': calibratedRight = verified && saved; break;
-  }
 
-  Serial.printf("MEASURED %.1f, TARGET %.1f => NEXT TEST %lu ms; %s\n",
-                actual, target, nextMs,
-                verified ? "VERIFIED (within test tolerance)" : "REPEAT CALIBRATION");
   waitingForMeasurement = false;
   motionPurpose = NONE;
   calibrationKind = 0;
 }
-
 
 
 // A timed reverse is a last-resort local recovery action, not a proof
@@ -1249,7 +999,7 @@ bool startReactiveAction() {
   return motionRunning;
 }
 
-// Z toggles continuous autonomy locally; Blynk V7 provides the same switch.
+// AM/MM select local autonomous/manual modes; Blynk V7 also controls autonomy.
 // Both paths require all three measured movement calibrations to be verified.
 void setContinuousAuto(bool enable, bool fromBlynk) {
   if (!enable) {
@@ -1269,7 +1019,7 @@ void setContinuousAuto(bool enable, bool fromBlynk) {
   if (continuousAutoEnabled) return;
 
   // Remote autonomy must obey the same commissioning lock as V2-V5.
-  // This does not disable local serial N/Z testing or the remote V6 stop.
+  // This does not disable local serial N/AM testing or the remote V6 stop.
   if (fromBlynk && !ENABLE_BLYNK_MOVEMENT) {
     Serial.println("AUTO LOCKED: Blynk movement disabled for commissioning");
     if (Blynk.connected()) Blynk.virtualWrite(V7, 0);
@@ -1296,7 +1046,7 @@ void setContinuousAuto(bool enable, bool fromBlynk) {
   failedFrontRecoveryScans = 0;
   autoReverseRecoveryUsed = false;
   if (Blynk.connected()) Blynk.virtualWrite(V7, 1);
-  Serial.println("AUTO ON: up to 10 actions or 30 seconds; X, Z or V7 OFF stops");
+  Serial.println("AUTO ON: up to 10 actions or 30 seconds; MM, X or V7 OFF stops");
 }
 
 // Run only when no motion is active. Never queue a second motion plan.
@@ -1334,9 +1084,17 @@ void serviceContinuousAuto() {
 }
 
 void processCommand(const char* command) {
-  // Z can turn autonomy OFF even while a movement is underway.
-  if (command[0] == 'Z' && command[1] == '\0') {
-    setContinuousAuto(!continuousAutoEnabled, false);
+  // Explicit modes are idempotent: MM can stop a running autonomous plan.
+  if (strcmp(command, "MM") == 0) {
+    cancelMotion("MM: manual mode selected; motors stopped, autonomy OFF");
+    return;
+  }
+  if (strcmp(command, "AM") == 0) {
+    if (continuousAutoEnabled) {
+      Serial.println("AM: autonomy already ON");
+    } else {
+      setContinuousAuto(true, false);
+    }
     return;
   }
   if (waitingForMeasurement) {
@@ -1348,7 +1106,8 @@ void processCommand(const char* command) {
     return;
   }
   if (!enforceMotorInterlock()) return;
-  if (command[0] == 'C' && command[2] == '\0' &&
+  if (command[0] == 'C' && command[1] != '\0' &&
+      command[2] == '\0' &&
       (command[1] == '1' || command[1] == '2' ||
        command[1] == 'Q' || command[1] == 'E')) {
     calibrationKind = command[1];
@@ -1370,13 +1129,45 @@ void processCommand(const char* command) {
     return;
   }
 
-  if (command[1] != '\0') {
-    
-    Serial.println("COMMANDS: ? status, N one action, Z auto ON/OFF, G probe arm, X stop");
-    Serial.println("MOVE: 1/2, Q/E | CAL: C1/C2/CQ/CE");
-    Serial.println("BENCH: A/l left, S/r right, F/B both, +/- duration");
-    Serial.println("NVS: H tests flash persistence without motor movement");
+  // Manual right-shift: check the side, pivot, then recheck the new front.
+  // A missing echo is not proof of free space; no unsensed forward move.
+  if (strcmp(command, "MR") == 0) {
+    if (continuousAutoEnabled) {
+      Serial.println("MR BLOCKED: enter MM before manual movement");
+      return;
+    }
 
+    if (!calibratedRight || !calibrated15) {
+      Serial.println("MR BLOCKED: check C2 and CE calibrations");
+      return;
+    }
+    uint8_t rightClose = 0;
+    const float rightCm = readFilteredDistanceCm(
+        senseRight_PIN_TRIG, senseRight_PIN_ECHO, &rightClose);
+    if (!enforceMotorInterlock()) return;
+    if (rightClose >= CLOSE_CONFIRMATIONS ||
+        rightCm < AUTO_CLEARANCE_CM) {
+      Serial.println("MR BLOCKED: right-side clearance not confirmed");
+      return;
+    }
+    stepCount = 0;
+    addStep(TURN_RIGHT, 1, -1, turnRight90Ms);
+    addStep(DRIVE, 1, 1, forward15Ms, 15.0f);
+    Serial.println("MR: right 90, stop, then require front >=30 cm for 15 cm drive");
+    beginPlan(MANUAL_RIGHT);
+    return;
+  }
+
+  // Intuitive serial names; keep one-character aliases for Blynk/bench compatibility.
+  if (strcmp(command, "CL") == 0) command = "Q";
+  else if (strcmp(command, "CR") == 0) command = "E";
+  else if (strcmp(command, "MF") == 0) command = "2";
+  else if (strcmp(command, "R") == 0) command = "B";
+
+  if (command[1] != '\0') {
+    Serial.println("MODES: AM auto ON | MM manual/auto OFF | X stop | ? status");
+    Serial.println("MOVE: CL left | CR right | MF forward | MR right then forward | R reverse");
+    Serial.println("CAL: C1/C2/CQ/CE | BENCH: A/l, S/r, F/B, +/- | N scan | G probe");
     return;
   }
   const char c = command[0];
@@ -1384,6 +1175,7 @@ void processCommand(const char* command) {
     Serial.printf("CAL: 10=%lu(%d) 15=%lu(%d) LEFT90=%lu(%d) RIGHT90=%lu(%d) ms\n",
                   forward10Ms, calibrated10, forward15Ms, calibrated15,
                   turnLeft90Ms, calibratedLeft, turnRight90Ms, calibratedRight);
+    Serial.println("CAL: (1)=source-configured / passed this session; NOT flash proof");
     Serial.printf("NAV: reactive, no map | continuous=%s | actions=%u/%u\n",
                   continuousAutoEnabled ? "ON" : "OFF",
                   (unsigned)autoActionsCompleted, (unsigned)AUTO_ACTION_LIMIT);
@@ -1426,10 +1218,6 @@ void processCommand(const char* command) {
     return;
 
   }
-  if (c == 'H') {
-    testNvsPersistence();
-    return;
-  }
   if (c == '+' || c == '-') {
     if (c == '+') motorTestMs = min(motorTestMs + MOTOR_TEST_STEP_MS,
                                    MOTOR_TEST_MAX_MS);
@@ -1440,7 +1228,7 @@ void processCommand(const char* command) {
   }
 
   if (continuousAutoEnabled) {
-    Serial.println("AUTO RUNNING: Z, X or Blynk V7 OFF stops it");
+    Serial.println("AUTO RUNNING: MM, X or Blynk V7 OFF stops it");
     return;
   }
   if (c == 'G') {
@@ -1457,6 +1245,11 @@ void processCommand(const char* command) {
 
   stepCount = 0;
   if (c == '1' || c == '2') {
+    if ((c == '1' && !calibrated10) ||
+        (c == '2' && !calibrated15)) {
+      Serial.println("MOVE BLOCKED: verify C1/C2 calibration first");
+      return;
+    }
     addStep(DRIVE, 1, 1, c == '1' ? forward10Ms : forward15Ms,
             c == '1' ? 10.0f : 15.0f);
     beginPlan(MANUAL);
@@ -1464,10 +1257,11 @@ void processCommand(const char* command) {
   }
   if (c == 'Q' || c == 'E') {
     if ((c == 'Q' && !calibratedLeft) ||
-      (c == 'E' && !calibratedRight)) {
-     Serial.println("TURN WARNING: timing not yet calibrated");
-   }
-     addStep(c == 'Q' ? TURN_LEFT : TURN_RIGHT,
+        (c == 'E' && !calibratedRight)) {
+      Serial.println("TURN BLOCKED: verify CQ/CE calibration first");
+      return;
+    }
+    addStep(c == 'Q' ? TURN_LEFT : TURN_RIGHT,
             c == 'Q' ? -1 : 1, c == 'Q' ? 1 : -1,
             c == 'Q' ? turnLeft90Ms : turnRight90Ms);
     beginPlan(MANUAL);
@@ -1483,7 +1277,7 @@ void processCommand(const char* command) {
     beginPlan(BENCH_TEST);
     return;
   }
-  Serial.println("UNKNOWN COMMAND: send ? for calibration status");
+  Serial.println("UNKNOWN COMMAND: use AM/MM, CL/CR/MF/MR/R, X or ?");
 }
 
 /* ============================================================
