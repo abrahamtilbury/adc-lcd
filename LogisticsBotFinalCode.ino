@@ -9,7 +9,6 @@
 const char WIFI_SSID[] = "Abe's iPhone";
 const char WIFI_PASSWORD[] = "nintendo";
 
-// Keep remote movement locked until safety tests pass.
 constexpr bool ENABLE_BLYNK_MOVEMENT = true;
 constexpr unsigned long BLYNK_RECONNECT_MS = 5000UL;
 
@@ -215,7 +214,7 @@ constexpr unsigned long forward15Ms = 768UL;
 constexpr unsigned long turnLeft90Ms = 770UL;
 constexpr unsigned long turnRight90Ms = 588UL;
 
-// Do not silently trust these timings if the motor PWM configuration changes.
+// Adjust RIGHT_DRIVE_RATIO if the unit curves to the left, values down to 0.80 can straight the units forward movement
 static_assert(MOTOR_TEST_DUTY == 180 && RIGHT_DRIVE_RATIO == 1.00f,
               "PWM changed: physically recalibrate and update manual timings");
 static_assert(forward10Ms >= MOTION_MIN_MS && forward10Ms <= MOTION_MAX_MS &&
@@ -280,7 +279,6 @@ void setup() {
     return;
   }
  
-  // Stage B only: ESP32 Arduino core v3.x LEDC API.
   const bool leftPwmReady = ledcAttach(leftMotor_PWM, 1000, 8);
   const bool rightPwmReady = ledcAttach(rightMotor_PWM, 1000, 8);
   if (!leftPwmReady || !rightPwmReady) {
@@ -297,7 +295,6 @@ void setup() {
     "PWM: 1000 Hz | 8-bit | duty=%u/255\n",
     (unsigned)MOTOR_TEST_DUTY
   );
-
   Serial.println("SERIAL: 115200 baud, Newline ending");
   Serial.println("MODES: AM = autonomous ON | MM = manual mode / stop autonomy");
   Serial.println("MOVE: CL left 90 | CR right 90 | MF forward 15cm");
@@ -306,38 +303,27 @@ void setup() {
   Serial.println("CAL: C1=10cm | C2=15cm | CQ left 90 | CE right 90");
   Serial.println("BENCH: A/l left, S/r right, F/B both, +/- duration");
   Serial.println("DIAGNOSTIC: N = one auto action | G = unsensed probe (TEST ONLY)");
-
   Serial.printf(
     "Bench duration: %lu ms | Limits: %lu-%lu ms\n",
     motorTestMs,
     MOTOR_TEST_MIN_MS,
     MOTOR_TEST_MAX_MS
   );
-
   Serial.printf(
     "Maximum movement duration: %lu ms\n",
     MOTION_MAX_MS
   );
- 
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
-
   Serial.printf("WIFI: attempting connection to %s\n", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
   Blynk.config(BLYNK_AUTH_TOKEN);
-
   Blynk.disconnect();
-
   blynkTimer.setInterval(2000L, publishBlynkTelemetry);
-
   Serial.println(
-
     "BLYNK: Wi-Fi starting; motors remain under local interlock"
-
   );
 }
-
 /* ============================================================
    5. ULTRASONIC SENSOR FUNCTIONS
    ============================================================ */
@@ -1008,8 +994,7 @@ bool startReactiveAction() {
   return motionRunning;
 }
 
-// AM/MM select local autonomous/manual modes; Blynk V7 also controls autonomy.
-// Both paths require all three measured movement calibrations to be verified.
+// AM/MM select local autonomous/manual modes; Blynk V7 also controls autonomy
 void setContinuousAuto(bool enable, bool fromBlynk) {
   if (!enable) {
     if (continuousAutoEnabled && motionPurpose == AUTO && motionRunning) {
@@ -1503,33 +1488,27 @@ void loop() {
   static char line[24];
   static uint8_t length = 0;
   static bool discardingLine = false;
-
   if (!enforceMotorInterlock()) {
-    if (motionRunning || waitingForMeasurement || continuousAutoEnabled)
+    if (motionRunning || waitingForMeasurement || continuousAutoEnabled) {
       cancelMotion("E-STOP/MOTOR FAULT: STOP; reset required");
+    }
     if (!estopReported) {
       Serial.println("INTERLOCK LATCHED: reset required");
       estopReported = true;
     }
-        while (Serial.available() > 0) Serial.read();
-    serviceBlynk();
+    while (Serial.available() > 0) Serial.read();
+      serviceBlynk();
     return;
   }
-
   serviceBlynk();
-
   // A Blynk callback may have latched the remote stop.
   if (!enforceMotorInterlock()) return;
-
   while (Serial.available() > 0) {
   const char c = (char)Serial.read();
-
   if (c == 'X' || c == 'x') {
     length = 0;
     discardingLine = false;
-
     cancelMotion("MANUAL X: BOTH MOTORS OFF; operation cancelled");
-
     while (Serial.available() > 0) Serial.read();
     return;
   }
