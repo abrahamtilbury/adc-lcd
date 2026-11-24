@@ -214,7 +214,7 @@ constexpr unsigned long forward15Ms = 768UL;
 constexpr unsigned long turnLeft90Ms = 770UL;
 constexpr unsigned long turnRight90Ms = 588UL;
 
-// Adjust RIGHT_DRIVE_RATIO if the unit curves to the left, values down to 0.80 can straight the units forward movement
+// Adjust RIGHT_DRIVE_RATIO if the unit curves to the left
 static_assert(MOTOR_TEST_DUTY == 180 && RIGHT_DRIVE_RATIO == 1.00f,
               "PWM changed: physically recalibrate and update manual timings");
 static_assert(forward10Ms >= MOTION_MIN_MS && forward10Ms <= MOTION_MAX_MS &&
@@ -1497,7 +1497,7 @@ void loop() {
       estopReported = true;
     }
     while (Serial.available() > 0) Serial.read();
-      serviceBlynk();
+    serviceBlynk();
     return;
   }
   serviceBlynk();
@@ -1533,7 +1533,6 @@ void loop() {
     Serial.println("SERIAL INPUT TOO LONG: discarded");
   }
 }
-   advanceMotion();
-   serviceContinuousAuto();
-
+    advanceMotion();
+    serviceContinuousAuto();
 }
